@@ -485,7 +485,8 @@ pub fn mark_decorative(doc: &mut Document, obj: ObjRef) -> Result<(), AltError> 
 ///
 /// This deliberately refuses a tag with child structure elements. Converting a parent would
 /// otherwise silently discard semantic descendants. Form references and invalid page ownership
-/// also refuse before the document changes. The visible page content is preserved: each
+/// also refuse before the document changes. A missing or ambiguous parent also refuses before
+/// mutation. The visible page content is preserved: each
 /// matching marked-content sequence changes from `BDC` with an MCID to `/Artifact BMC`.
 pub fn mark_tag_artifact(doc: &mut Document, obj: ObjRef) -> Result<(), ArtifactError> {
     tree_root(doc).ok_or(ArtifactError::Untagged)?;
@@ -519,13 +520,14 @@ pub fn mark_tag_artifact(doc: &mut Document, obj: ObjRef) -> Result<(), Artifact
     if found != ids {
         return Err(ArtifactError::ContentNotFound);
     }
+    let parent = element.dict.get(b"P").and_then(Object::as_ref).ok_or(ArtifactError::NoParent)?;
+    let parent_kids = parent_kids_without_tag(doc, parent, obj)?;
     let stream = doc.add(Object::Stream(Stream::flate(Dict::new(), &pdfcraft_content::serialize_ops(&ops))));
     doc.update_dict(page.obj, |p| p.set(b"Contents".to_vec(), Object::Ref(stream)))?;
     if let Some(key) = page.dict.get(b"StructParents").and_then(Object::as_int) {
         clear_parent_tree(doc, key, obj).map_err(|e| ArtifactError::ParentTree(e.to_string()))?;
     }
-    let parent = element.dict.get(b"P").and_then(Object::as_ref).ok_or(ArtifactError::NoParent)?;
-    remove_from_parent(doc, parent, obj)?;
+    doc.update_dict(parent, |p| p.set(b"K".to_vec(), parent_kids))?;
     // Keep the retired object valid if another object holds an out-of-tree reference to it.
     doc.update_dict(obj, |d| {
         d.remove(b"P");
@@ -533,7 +535,7 @@ pub fn mark_tag_artifact(doc: &mut Document, obj: ObjRef) -> Result<(), Artifact
     Ok(())
 }
 
-fn remove_from_parent(doc: &mut Document, parent: ObjRef, obj: ObjRef) -> Result<(), ArtifactError> {
+fn parent_kids_without_tag(doc: &Document, parent: ObjRef, obj: ObjRef) -> Result<Object, ArtifactError> {
     let kids = doc.get(parent).as_dict().and_then(|p| p.get(b"K").cloned()).ok_or(ArtifactError::NoParent)?;
     let replacement = match kids {
         Object::Array(items) => {
@@ -545,8 +547,7 @@ fn remove_from_parent(doc: &mut Document, parent: ObjRef, obj: ObjRef) -> Result
         Object::Ref(r) if r == obj => Object::Array(Vec::new()),
         _ => return Err(ArtifactError::NoParent),
     };
-    doc.update_dict(parent, |p| p.set(b"K".to_vec(), replacement))?;
-    Ok(())
+    Ok(replacement)
 }
 
 /// Replace `obj` by null in the page's parent-tree array (`key`), in a flat /Nums tree.

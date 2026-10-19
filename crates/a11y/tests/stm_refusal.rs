@@ -301,3 +301,110 @@ fn annotation_reference_refusal_names_the_unsupported_content_and_preserves_its_
         assert_eq!(nums[4], Object::Int(2));
     }
 }
+
+fn assert_artifact_refusal_preserves(doc: &mut Document, expected: &pdfcraft_a11y::ArtifactError) {
+    let state = doc.read_state();
+    let dirty = doc.is_modified();
+    let modified = doc.modified_objects();
+    let saved = pdfcraft_cos::write_full(doc, &Default::default()).unwrap();
+    let objects: Vec<_> = (1..=12).map(|number| doc.get(ObjRef::new(number, 0))).collect();
+    let streams = [stream(doc, 4), stream(doc, 10)];
+    let tags = pdfcraft_a11y::tags(doc);
+    let alts = pdfcraft_a11y::figures(doc).into_iter().map(|figure| figure.alt).collect::<Vec<_>>();
+    assert!(tags.iter().any(|tag| tag.object == ObjRef::new(7, 0)), "the malformed leaf remains reachable");
+    assert_eq!(pdfcraft_a11y::mark_tag_artifact(doc, ObjRef::new(7, 0)).as_ref(), Err(expected));
+    assert!(state.matches(doc), "refusal preserves the exact overlay and allocates no stream");
+    assert_eq!(doc.is_modified(), dirty);
+    assert_eq!(doc.modified_objects(), modified);
+    assert_eq!((1..=12).map(|number| doc.get(ObjRef::new(number, 0))).collect::<Vec<_>>(), objects);
+    assert_eq!([stream(doc, 4), stream(doc, 10)], streams);
+    let after = pdfcraft_cos::write_full(doc, &Default::default()).unwrap();
+    assert_eq!(after, saved);
+    // Full saves renumber objects; incremental saves retain the fixture IDs checked below.
+    let reopened = Document::open(Arc::new(pdfcraft_cos::write_incremental(doc, &Default::default()).unwrap())).unwrap();
+    assert_eq!(pdfcraft_a11y::tags(&reopened), tags);
+    assert_eq!(pdfcraft_a11y::figures(&reopened).into_iter().map(|figure| figure.alt).collect::<Vec<_>>(), alts);
+    assert_eq!([stream(&reopened, 4), stream(&reopened, 10)], streams);
+    assert_eq!(reopened.get(ObjRef::new(3, 0)), objects[2]);
+    assert_eq!(reopened.get(ObjRef::new(9, 0)), objects[8]);
+    assert_eq!(reopened.get(ObjRef::new(7, 0)), objects[6]);
+    assert_eq!(
+        reopened.get(ObjRef::new(9, 0)).as_dict().unwrap().get(b"Nums").unwrap().as_array().unwrap()[1],
+        Object::Array(vec![Object::Ref(ObjRef::new(7, 0))])
+    );
+}
+
+#[test]
+fn artifact_parent_refusals_preserve_direct_library_state_and_saved_content() {
+    use pdfcraft_a11y::ArtifactError::{AmbiguousParent, NoParent};
+    let cases = [
+        (None, "<< >>", NoParent),
+        (Some(Object::Int(6)), "<< >>", NoParent),
+        (Some(Object::Ref(ObjRef::new(12, 0))), "null", NoParent),
+        (Some(Object::Ref(ObjRef::new(12, 0))), "<< >>", NoParent),
+        (Some(Object::Ref(ObjRef::new(12, 0))), "<< /K 3 >>", NoParent),
+        (Some(Object::Ref(ObjRef::new(12, 0))), "<< /K 8 0 R >>", NoParent),
+        (Some(Object::Ref(ObjRef::new(12, 0))), "<< /K [] >>", AmbiguousParent),
+        (Some(Object::Ref(ObjRef::new(12, 0))), "<< /K [7 0 R 7 0 R] >>", AmbiguousParent),
+    ];
+    for dirty in [false, true] {
+        for (parent, parent_object, expected) in &cases {
+            let mut doc = page_owned("11 0 R", &["<< /Type /MCR /MCID 0 /Pg 3 0 R >>", parent_object]);
+            doc.update_dict(ObjRef::new(7, 0), |dict| {
+                dict.remove(b"P");
+                if let Some(parent) = parent {
+                    dict.set(b"P".to_vec(), parent.clone());
+                }
+            })
+            .unwrap();
+            let mut doc = Document::open(Arc::new(pdfcraft_cos::write_incremental(&doc, &Default::default()).unwrap())).unwrap();
+            if dirty {
+                pdfcraft_a11y::set_alt(&mut doc, ObjRef::new(8, 0), Some("Saved later")).unwrap();
+            }
+            assert_artifact_refusal_preserves(&mut doc, expected);
+        }
+    }
+}
+
+#[test]
+fn artifact_missing_page_content_precedes_invalid_parent_without_mutation() {
+    let mut doc = page_owned("11 0 R", &["<< /Type /MCR /MCID 1 /Pg 3 0 R >>"]);
+    doc.update_dict(ObjRef::new(7, 0), |dict| {
+        dict.remove(b"P");
+    })
+    .unwrap();
+    let mut doc = Document::open(Arc::new(pdfcraft_cos::write_incremental(&doc, &Default::default()).unwrap())).unwrap();
+    assert_artifact_refusal_preserves(&mut doc, &pdfcraft_a11y::ArtifactError::ContentNotFound);
+}
+
+#[test]
+fn artifact_indirect_content_removes_scalar_or_array_parent_child_and_preserves_drawing() {
+    for scalar in [false, true] {
+        let mut doc = page_owned("11 0 R", &["<< /Type /MCR /MCID 0 /Pg 3 0 R >>"]);
+        if scalar {
+            doc.update_dict(ObjRef::new(6, 0), |dict| dict.set(b"K".to_vec(), Object::Ref(ObjRef::new(7, 0)))).unwrap();
+        }
+        let original_form = stream(&doc, 10);
+        let other_figure = doc.get(ObjRef::new(8, 0));
+        pdfcraft_a11y::mark_tag_artifact(&mut doc, ObjRef::new(7, 0)).unwrap();
+        let reopened = Document::open(Arc::new(pdfcraft_cos::write_incremental(&doc, &Default::default()).unwrap())).unwrap();
+        let contents = reopened.get(ObjRef::new(3, 0)).as_dict().unwrap().get(b"Contents").unwrap().as_ref().unwrap();
+        let ops = pdfcraft_content::parse(&stream(&reopened, contents.num)).ops;
+        assert!(ops.iter().any(|op| op.op == b"BMC" && op.operands == [Object::name("Artifact")]));
+        assert!(!ops.iter().any(|op| op.op == b"BDC"));
+        let rectangle = ops.iter().find(|op| op.op == b"re").unwrap();
+        assert_eq!(rectangle.nums::<4>(), Some([10.0, 10.0, 20.0, 20.0]));
+        assert!(ops.iter().any(|op| op.op == b"f"));
+        assert!(ops.iter().any(|op| op.op == b"Do" && op.operands == [Object::name("Form")]));
+        assert_eq!(stream(&reopened, 10), original_form);
+        assert_eq!(reopened.get(ObjRef::new(8, 0)), other_figure);
+        let remaining = if scalar { vec![] } else { vec![Object::Ref(ObjRef::new(8, 0))] };
+        assert_eq!(reopened.get(ObjRef::new(6, 0)).as_dict().unwrap().get(b"K"), Some(&Object::Array(remaining)));
+        assert!(!reopened.get(ObjRef::new(7, 0)).as_dict().unwrap().contains(b"P"));
+        assert_eq!(pdfcraft_a11y::tags(&reopened).iter().map(|tag| tag.object.num).collect::<Vec<_>>(), if scalar { vec![6] } else { vec![6, 8] });
+        assert_eq!(
+            reopened.get(ObjRef::new(9, 0)).as_dict().unwrap().get(b"Nums").unwrap().as_array().unwrap()[1],
+            Object::Array(vec![Object::Null])
+        );
+    }
+}
