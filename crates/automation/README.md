@@ -31,6 +31,12 @@ mcp::McpServer::new(a).serve(stdin, stdout)?             // newline-delimited JS
 
 ## Text search and cache limits
 
+Text extraction, Find and plain-text export omit glyphs wholly outside supported form bounds.
+Transformed and nested bounds apply; boundary contact keeps the complete glyph.
+Mixed clipped ActualText uses surviving glyph Unicode; an unmapped survivor cannot recover part of its replacement.
+Arbitrary curved clips, masks and Office export remain separate.
+Excessive clipping returns an extraction error. Find reports it through its existing page warnings.
+
 `text_word_count` counts the current snapshot without filling the text cache. It returns totals
 and per-page Unicode word/character counts, with optional tagged-table, tagged-code and
 image/OCR exclusions. See [word count](../../docs/word-count.md) for counting rules and limits.
