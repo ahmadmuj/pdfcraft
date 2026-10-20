@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 // Forms already have a nesting limit; explicit path clips need their own storage/work bounds.
 // At this depth each convex intersection has at most 4 * (depth + 1) vertices, so the retained
-// polygons use at most about 4 MiB. Work also bounds repeated intersections and glyph tests.
+// polygons use at most about 4 MiB. Work bounds repeated intersections, not the number of
+// glyphs. Each visibility test stays linear in the bounded region vertex count.
 const MAX_DEPTH: usize = 256;
 const MAX_WORK: usize = 1 << 22;
 const MAX_VERTICES: usize = 4 * (MAX_DEPTH + 1);
@@ -77,7 +78,7 @@ impl TextClips {
         self.stack.pop();
     }
 
-    pub(super) fn visible(&mut self, quad: &[Point; 4]) -> bool {
+    pub(super) fn visible(&self, quad: &[Point; 4]) -> bool {
         if self.exceeded {
             return false;
         }
@@ -85,9 +86,6 @@ impl TextClips {
             return true;
         };
         if region.is_empty() {
-            return false;
-        }
-        if !self.spend(region.len().saturating_add(4).saturating_mul(8)) {
             return false;
         }
         // Separating axes of both convex polygons distinguish the real transformed geometry

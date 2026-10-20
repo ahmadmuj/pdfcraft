@@ -218,11 +218,15 @@ fn mixed_replacement_does_not_invent_unicode_for_unmapped_survivors() {
 }
 
 #[test]
-fn clip_work_is_bounded_even_without_deep_nesting() {
-    let body = format!("BT /F1 1 Tf 10 10 Td ({}) Tj ET", "A".repeat(70_000));
-    let pdf = document(&body, BOUNDS, IDENTITY, "/Fm Do", None);
-    let error = extract_page_filtered(&pdf, 0, &InterpreterSettings::default(), TextFilter::default()).unwrap_err();
-    assert_eq!(error, "text clipping limit exceeded");
+fn dense_text_inside_simple_and_nested_forms_remains_complete() {
+    let line = "A".repeat(1000);
+    let body: String = (0..70).map(|row| format!("BT /F1 0.25 Tf 100 {} Td ({line}) Tj ET\n", 100 + row * 2)).collect();
+    let bounds = [0., 0., 400., 400.];
+    let expected = vec![line; 70].join("\n");
+    assert_text(&document(&body, bounds, IDENTITY, "/Fm Do", None), &expected);
+    // Rotated inner and outer bounds intersect in more than four edges. All text stays
+    // in their common center, so clipping complexity must not become a glyph-count limit.
+    assert_text(&document("/Inner Do", bounds, IDENTITY, "/Fm Do", Some((&body, bounds, [0.707, 0.707, -0.707, 0.707, 200., -82.8]))), &expected);
 }
 
 #[test]
@@ -245,4 +249,14 @@ fn uncertain_and_compound_clips_do_not_clear_the_ancestor() {
     clips.pop();
     clips.push(&Rect::new(0., 0., 1e-10, 1e-10).to_path(0.1));
     assert!(clips.visible(&[Point::new(0.5e-10, 0.5e-10); 4]));
+}
+
+#[test]
+fn repeated_clip_intersections_are_bounded_without_limiting_text_length() {
+    // Every q/Q pair restores the same parent, so this tests work rather than stack depth.
+    let mut body = "q 0 0 m 50 0 l 60 50 l 10 50 l h W n Q\n".repeat(40_000);
+    body.push_str("BT /F1 6 Tf 10 10 Td (INSIDE) Tj ET");
+    let pdf = document(&body, BOUNDS, IDENTITY, "/Fm Do", None);
+    let error = extract_page_filtered(&pdf, 0, &InterpreterSettings::default(), TextFilter::default()).unwrap_err();
+    assert_eq!(error, "text clipping limit exceeded");
 }
