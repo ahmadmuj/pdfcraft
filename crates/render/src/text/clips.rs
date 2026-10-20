@@ -1,6 +1,6 @@
 //! Bounded extraction clips. Only single convex quadrilaterals are recognized: these include
 //! transformed form BBoxes. Unknown paths keep the previous constraint and a matching pop.
-use kurbo::{BezPath, PathEl, Point};
+use kurbo::{BezPath, PathEl, Point, Vec2};
 use std::sync::Arc;
 
 // Forms already have a nesting limit; explicit path clips need their own storage/work bounds.
@@ -93,9 +93,9 @@ impl TextClips {
         if edges(&region).any(|(a, b)| outside(a, b, quad, 1.0)) {
             return false;
         }
-        let area = area(quad);
-        if area.is_finite() && area != 0.0 {
-            let sign = area.signum();
+        let winding = winding(quad);
+        if winding.is_finite() && winding != 0.0 {
+            let sign = winding.signum();
             if edges(quad).any(|(a, b)| outside(a, b, &region, sign)) {
                 return false;
             }
@@ -108,22 +108,46 @@ fn edges(points: &[Point]) -> impl Iterator<Item = (Point, Point)> + '_ {
     points.iter().copied().zip(points.iter().copied().cycle().skip(1)).take(points.len())
 }
 
-fn cross(a: Point, b: Point, p: Point) -> f64 {
-    (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+fn normalized_edge(a: Point, b: Point) -> Vec2 {
+    let edge = b - a;
+    let scale = edge.x.abs().max(edge.y.abs());
+    if scale == 0.0 {
+        return edge;
+    }
+    let normalized = edge / scale;
+    // Do not erase a direction component or give it subnormal relative precision.
+    // Raw products remain usable for extreme axis ratios; callers reject nonfinite results.
+    if (edge.x != 0.0 && normalized.x.abs() < f64::MIN_POSITIVE) || (edge.y != 0.0 && normalized.y.abs() < f64::MIN_POSITIVE) {
+        edge
+    } else {
+        normalized
+    }
 }
 
-fn tolerance(a: Point, b: Point, p: Point) -> f64 {
-    32.0 * f64::EPSILON * (((b.x - a.x) * (p.y - a.y)).abs() + ((b.y - a.y) * (p.x - a.x)).abs()).max(1.0)
+// Normalize the edge once. Signed distances then retain tiny finite bounds instead of
+// multiplying two tiny lengths. The error bound follows those products, not page units.
+fn side(edge: Vec2, offset: Vec2) -> (f64, f64) {
+    let left = edge.x * offset.y;
+    let right = edge.y * offset.x;
+    (left - right, 32.0 * f64::EPSILON * (left.abs() + right.abs()))
+}
+
+fn cross(a: Point, b: Point, p: Point) -> f64 {
+    side(normalized_edge(a, b), p - a).0
 }
 
 fn outside(a: Point, b: Point, points: &[Point], sign: f64) -> bool {
+    let edge = normalized_edge(a, b);
     points.iter().all(|&p| {
-        let side = sign * cross(a, b, p);
-        side.is_finite() && side < -tolerance(a, b, p)
+        let (distance, tolerance) = side(edge, p - a);
+        let distance = sign * distance;
+        distance.is_finite() && distance < -tolerance
     })
 }
 
-fn area(points: &[Point]) -> f64 {
+// Only the winding sign is needed. Convex triangle heights share that sign, without
+// the extra length factor that makes the usual area sum underflow for tiny polygons.
+fn winding(points: &[Point]) -> f64 {
     let Some(&origin) = points.first() else {
         return 0.0;
     };
@@ -154,7 +178,7 @@ fn quadrilateral(path: &BezPath) -> Option<Vec<Point>> {
         let collapsed = (a == b && c == d) || (a == d && b == c) || points.iter().all(|p| p.x == a.x) || points.iter().all(|p| p.y == a.y);
         return collapsed.then(Vec::new);
     }
-    let signed = area(&points);
+    let signed = winding(&points);
     if !signed.is_finite() || signed == 0.0 {
         return None;
     }
@@ -168,21 +192,25 @@ fn quadrilateral(path: &BezPath) -> Option<Vec<Point>> {
 fn intersect(subject: &[Point], clip: &[Point]) -> Result<Option<Vec<Point>>, ()> {
     let mut result = subject.to_vec();
     for (a, b) in edges(clip) {
+        let edge = normalized_edge(a, b);
         let mut next = Vec::with_capacity(result.len().saturating_add(1));
         for (start, end) in edges(&result) {
-            let s = cross(a, b, start);
-            let e = cross(a, b, end);
+            let (s, s_tolerance) = side(edge, start - a);
+            let (e, e_tolerance) = side(edge, end - a);
             if !s.is_finite() || !e.is_finite() {
                 return Ok(None);
             }
-            let inside_start = s >= -tolerance(a, b, start);
-            let inside_end = e >= -tolerance(a, b, end);
+            let inside_start = s >= -s_tolerance;
+            let inside_end = e >= -e_tolerance;
             if inside_start != inside_end {
-                let fraction = s / (s - e);
+                // Interpolate from the nearer endpoint to avoid cancelling a tiny boundary
+                // coordinate when the other endpoint is many orders of magnitude farther away.
+                let (origin, other, near, far) = if s.abs() <= e.abs() { (start, end, s, e) } else { (end, start, e, s) };
+                let fraction = near / (near - far);
                 if !fraction.is_finite() {
                     return Ok(None);
                 }
-                let p = start + (end - start) * fraction.clamp(0.0, 1.0);
+                let p = origin + (other - origin) * fraction.clamp(0.0, 1.0);
                 if !p.x.is_finite() || !p.y.is_finite() {
                     return Ok(None);
                 }
@@ -202,7 +230,7 @@ fn intersect(subject: &[Point], clip: &[Point]) -> Result<Option<Vec<Point>>, ()
         }
         result = next;
     }
-    let signed = area(&result);
+    let signed = winding(&result);
     if !signed.is_finite() {
         return Ok(None);
     }

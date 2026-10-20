@@ -173,7 +173,7 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 ## Progress log
 
-- **2026-10-20 (M2, #3503 partial):** Extraction, Find and plain-text export omit text wholly outside supported form bounds. Tests cover transformed and nested forms, ActualText and save/reopen. The signature fixture keeps its expected caption inside its form bounds. Office export and arbitrary curved clips remain separate. Estimates unchanged.
+- **2026-10-20 (M2, #3503 partial):** Extraction, Find and plain-text export omit text wholly outside supported form bounds. Tests cover transformed and nested forms, ActualText and save/reopen. Finite near-degenerate bounds retain their clipping constraints. The signature fixture keeps its expected caption inside its form bounds. Office export and arbitrary curved clips remain separate. Estimates unchanged.
 
 - **2026-10-19 (M14, #3373):** The main menu and its long submenus scroll in short windows, keeping their commands reachable. Estimates unchanged.
 

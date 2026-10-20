@@ -1,6 +1,74 @@
 use super::super::*;
 use lopdf::{Document, Object, Stream, dictionary};
 
+#[test]
+fn near_degenerate_outer_form_excludes_wholly_outside_text() {
+    // Decimal literals retain f64 CTM values without depending on a tiny f32 BBox.
+    let tiny = format!("0.{}1", "0".repeat(199));
+    let inverse = format!("1{}.0", "0".repeat(200));
+    let page = format!(
+        "q 1 0 0 1 0 400 cm {tiny} 0 0 {tiny} 0 0 cm /Fm Do Q \
+         BT /F1 6 Tf 20 20 Td (PAGE) Tj ET"
+    );
+    let body = format!("{inverse} 0 0 {inverse} 0 0 cm BT /F1 6 Tf 10 -10 Td (OUTSIDE) Tj ET");
+    let bounds = [0., 0., 1., 1.];
+    let control = document("", bounds, IDENTITY, &page, None);
+    assert_text(&control, "PAGE");
+    let pdf = document(&body, bounds, IDENTITY, &page, None);
+    assert_text(&pdf, "PAGE");
+}
+
+#[test]
+fn finite_small_clips_keep_inside_and_contact_but_exclude_separated_points() {
+    use kurbo::Point;
+    for scale in [1e-200, 1e-10, 1.0, 1e100] {
+        let path = Rect::new(0., 0., scale, scale).to_path(0.1);
+        for path in [path.clone(), path.reverse_subpaths()] {
+            let mut clips = clips::TextClips::default();
+            clips.push(&path);
+            assert!(clips.visible(&[Point::new(0.5 * scale, 0.5 * scale); 4]), "inside {scale}");
+            assert!(clips.visible(&[Point::new(scale, 0.5 * scale); 4]), "contact {scale}");
+            assert!(!clips.visible(&[Point::new(2.0 * scale, 0.5 * scale); 4]), "outside {scale}");
+        }
+    }
+}
+
+#[test]
+fn near_degenerate_nested_clips_keep_their_intersection_and_restore() {
+    use kurbo::Point;
+    let small = Rect::new(0., 0., 1e-200, 1e-200).to_path(0.1);
+    let large = Rect::new(0., 0., 50., 50.).to_path(0.1);
+    for (first, second, visible_after_pop) in [(&large, &small, true), (&small, &large, false)] {
+        let mut clips = clips::TextClips::default();
+        clips.push(first);
+        clips.push(second);
+        assert!(clips.visible(&[Point::new(0.5e-200, 0.5e-200); 4]));
+        assert!(!clips.visible(&[Point::new(10., 10.); 4]));
+        clips.pop();
+        assert_eq!(clips.visible(&[Point::new(10., 10.); 4]), visible_after_pop);
+        clips.pop();
+        assert!(clips.visible(&[Point::new(10., 10.); 4]));
+    }
+}
+
+#[test]
+fn extreme_axis_ratios_preserve_boundary_contact() {
+    use kurbo::{PathEl, Point};
+    for height in [1e120, 1e200] {
+        let path = BezPath::from_vec(vec![
+            PathEl::MoveTo(Point::new(0., 0.)),
+            PathEl::LineTo(Point::new(1e-200, height)),
+            PathEl::LineTo(Point::new(2e-200, height)),
+            PathEl::LineTo(Point::new(1e-200, 0.)),
+            PathEl::ClosePath,
+        ]);
+        let mut clips = clips::TextClips::default();
+        clips.push(&path);
+        assert!(clips.visible(&[Point::new(0., 0.); 4]), "corner {height}");
+        assert!(!clips.visible(&[Point::new(1., 1.); 4]), "outside {height}");
+    }
+}
+
 fn document(body: &str, bbox: [f32; 4], matrix: [f32; 6], page_body: &str, inner: Option<(&str, [f32; 4], [f32; 6])>) -> Pdf {
     to_pdf(form_document(body, bbox, matrix, page_body, inner))
 }
@@ -242,8 +310,8 @@ fn uncertain_and_compound_clips_do_not_clear_the_ancestor() {
     assert!(clips.visible(&inside));
     assert!(!clips.visible(&outside));
     clips.pop();
-    // Products underflow, but the four distinct points do not establish an empty clip.
-    clips.push(&Rect::new(0., 0., 1e-200, 1e-200).to_path(0.1));
+    // Subtracting these finite endpoints overflows; do not treat uncertainty as an empty clip.
+    clips.push(&Rect::new(-f64::MAX, -f64::MAX, f64::MAX, f64::MAX).to_path(0.1));
     assert!(clips.visible(&inside));
     assert!(!clips.visible(&outside));
     clips.pop();
