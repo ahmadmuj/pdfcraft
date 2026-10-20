@@ -171,7 +171,7 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 | 8 | 1.0 polish: performance, right-to-left, missing languages, keyboard-only (M14) | 55–95 |
 
 ## Progress log
-- **2026-10-18 (M12, #3221 mutation safety):** Decorative and artifact actions refuse unsupported ownership before any mutation. This includes form streams, annotation or object references, references to other pages, invalid references and structure children. Synthetic tests check exact preservation, undo history and save/reopen. Artifact marking also rejects missing or ambiguous parents before mutation, including indirect MCID ownership. Direct-library tests preserve clean and edited documents. Form editing and stream-aware readouts stay outside this fix. Estimates unchanged.
+- **2026-10-18 (M12, #3221 mutation safety):** Decorative and artifact actions refuse unsupported ownership before any mutation. This includes form streams, annotation or object references, references to other pages, invalid references and structure children. Synthetic tests check exact preservation, undo history and save/reopen. Artifact marking also rejects missing, ambiguous or mismatched parents before mutation, including indirect MCID ownership. Direct-library tests preserve clean and edited documents. Form editing and stream-aware readouts stay outside this fix. Estimates unchanged.
 
 - **2026-10-19 (M14, #3373):** The main menu and its long submenus scroll in short windows, keeping their commands reachable. Estimates unchanged.
 

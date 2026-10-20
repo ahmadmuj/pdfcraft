@@ -485,7 +485,7 @@ pub fn mark_decorative(doc: &mut Document, obj: ObjRef) -> Result<(), AltError> 
 ///
 /// This deliberately refuses a tag with child structure elements. Converting a parent would
 /// otherwise silently discard semantic descendants. Form references and invalid page ownership
-/// also refuse before the document changes. A missing or ambiguous parent also refuses before
+/// also refuse before the document changes. A missing, ambiguous or mismatched parent also refuses before
 /// mutation. The visible page content is preserved: each
 /// matching marked-content sequence changes from `BDC` with an MCID to `/Artifact BMC`.
 pub fn mark_tag_artifact(doc: &mut Document, obj: ObjRef) -> Result<(), ArtifactError> {
@@ -522,6 +522,12 @@ pub fn mark_tag_artifact(doc: &mut Document, obj: ObjRef) -> Result<(), Artifact
     }
     let parent = element.dict.get(b"P").and_then(Object::as_ref).ok_or(ArtifactError::NoParent)?;
     let parent_kids = parent_kids_without_tag(doc, parent, obj)?;
+    let reachable_parent = element
+        .parent
+        .or_else(|| doc.root().and_then(|catalog| doc.get(catalog).as_dict().and_then(|dict| dict.get(b"StructTreeRoot").and_then(Object::as_ref))));
+    if reachable_parent != Some(parent) {
+        return Err(ArtifactError::NoParent);
+    }
     let stream = doc.add(Object::Stream(Stream::flate(Dict::new(), &pdfcraft_content::serialize_ops(&ops))));
     doc.update_dict(page.obj, |p| p.set(b"Contents".to_vec(), Object::Ref(stream)))?;
     if let Some(key) = page.dict.get(b"StructParents").and_then(Object::as_int) {

@@ -367,6 +367,47 @@ fn artifact_parent_refusals_preserve_direct_library_state_and_saved_content() {
 }
 
 #[test]
+fn artifact_mismatched_parent_refuses_before_changing_content_or_saved_state() {
+    for dirty in [false, true] {
+        for indirect in [false, true] {
+            for root in [false, true] {
+                let kids = if indirect { "11 0 R" } else { "0" };
+                let mut doc = page_owned(kids, &["<< /Type /MCR /MCID 0 /Pg 3 0 R >>", "<< /Type /StructElem /S /Document /K [7 0 R] >>"]);
+                if root {
+                    doc.update_dict(ObjRef::new(5, 0), |dict| dict.set(b"K".to_vec(), Object::Ref(ObjRef::new(7, 0)))).unwrap();
+                }
+                doc.update_dict(ObjRef::new(7, 0), |dict| dict.set(b"P".to_vec(), Object::Ref(ObjRef::new(12, 0)))).unwrap();
+                let mut doc = Document::open(Arc::new(pdfcraft_cos::write_incremental(&doc, &Default::default()).unwrap())).unwrap();
+                if dirty {
+                    pdfcraft_a11y::set_alt(&mut doc, ObjRef::new(7, 0), Some("Saved later")).unwrap();
+                }
+                assert_artifact_refusal_preserves(&mut doc, &pdfcraft_a11y::ArtifactError::NoParent);
+            }
+        }
+    }
+}
+
+#[test]
+fn artifact_inline_parent_does_not_become_a_removable_indirect_ancestor() {
+    for dirty in [false, true] {
+        for root in [false, true] {
+            let mut doc = page_owned("11 0 R", &["<< /Type /MCR /MCID 0 /Pg 3 0 R >>"]);
+            let parent = ObjRef::new(if root { 5 } else { 6 }, 0);
+            let mut inline = pdfcraft_cos::Dict::new();
+            inline.set(b"S".to_vec(), Object::name("Document"));
+            inline.set(b"K".to_vec(), Object::Ref(ObjRef::new(7, 0)));
+            doc.update_dict(parent, |dict| dict.set(b"K".to_vec(), Object::Dict(inline))).unwrap();
+            doc.update_dict(ObjRef::new(7, 0), |dict| dict.set(b"P".to_vec(), Object::Ref(parent))).unwrap();
+            let mut doc = Document::open(Arc::new(pdfcraft_cos::write_incremental(&doc, &Default::default()).unwrap())).unwrap();
+            if dirty {
+                pdfcraft_a11y::set_alt(&mut doc, ObjRef::new(7, 0), Some("Saved later")).unwrap();
+            }
+            assert_artifact_refusal_preserves(&mut doc, &pdfcraft_a11y::ArtifactError::NoParent);
+        }
+    }
+}
+
+#[test]
 fn artifact_missing_page_content_precedes_invalid_parent_without_mutation() {
     let mut doc = page_owned("11 0 R", &["<< /Type /MCR /MCID 1 /Pg 3 0 R >>"]);
     doc.update_dict(ObjRef::new(7, 0), |dict| {
@@ -379,10 +420,18 @@ fn artifact_missing_page_content_precedes_invalid_parent_without_mutation() {
 
 #[test]
 fn artifact_indirect_content_removes_scalar_or_array_parent_child_and_preserves_drawing() {
-    for scalar in [false, true] {
+    for (root, scalar) in [(false, false), (false, true), (true, false), (true, true)] {
         let mut doc = page_owned("11 0 R", &["<< /Type /MCR /MCID 0 /Pg 3 0 R >>"]);
+        let parent = ObjRef::new(if root { 5 } else { 6 }, 0);
+        if root {
+            doc.update_dict(ObjRef::new(7, 0), |dict| dict.set(b"P".to_vec(), Object::Ref(parent))).unwrap();
+            doc.update_dict(parent, |dict| {
+                dict.set(b"K".to_vec(), Object::Array(vec![Object::Ref(ObjRef::new(7, 0)), Object::Ref(ObjRef::new(8, 0))]))
+            })
+            .unwrap();
+        }
         if scalar {
-            doc.update_dict(ObjRef::new(6, 0), |dict| dict.set(b"K".to_vec(), Object::Ref(ObjRef::new(7, 0)))).unwrap();
+            doc.update_dict(parent, |dict| dict.set(b"K".to_vec(), Object::Ref(ObjRef::new(7, 0)))).unwrap();
         }
         let original_form = stream(&doc, 10);
         let other_figure = doc.get(ObjRef::new(8, 0));
@@ -399,9 +448,15 @@ fn artifact_indirect_content_removes_scalar_or_array_parent_child_and_preserves_
         assert_eq!(stream(&reopened, 10), original_form);
         assert_eq!(reopened.get(ObjRef::new(8, 0)), other_figure);
         let remaining = if scalar { vec![] } else { vec![Object::Ref(ObjRef::new(8, 0))] };
-        assert_eq!(reopened.get(ObjRef::new(6, 0)).as_dict().unwrap().get(b"K"), Some(&Object::Array(remaining)));
+        assert_eq!(reopened.get(parent).as_dict().unwrap().get(b"K"), Some(&Object::Array(remaining)));
         assert!(!reopened.get(ObjRef::new(7, 0)).as_dict().unwrap().contains(b"P"));
-        assert_eq!(pdfcraft_a11y::tags(&reopened).iter().map(|tag| tag.object.num).collect::<Vec<_>>(), if scalar { vec![6] } else { vec![6, 8] });
+        let expected_tags = match (root, scalar) {
+            (false, false) => vec![6, 8],
+            (false, true) => vec![6],
+            (true, false) => vec![8],
+            (true, true) => vec![],
+        };
+        assert_eq!(pdfcraft_a11y::tags(&reopened).iter().map(|tag| tag.object.num).collect::<Vec<_>>(), expected_tags);
         assert_eq!(
             reopened.get(ObjRef::new(9, 0)).as_dict().unwrap().get(b"Nums").unwrap().as_array().unwrap()[1],
             Object::Array(vec![Object::Null])
