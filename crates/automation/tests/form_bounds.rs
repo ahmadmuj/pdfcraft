@@ -111,3 +111,44 @@ fn clipping_limits_report_the_cause_without_partial_export() {
     assert_eq!(std::fs::read(dir.path().join("export.txt")).unwrap(), b"keep existing output");
     assert_eq!(call(&mut api, "doc_info", json!({"doc":doc}))["document"]["dirty"], false);
 }
+
+#[test]
+fn sequential_clips_preserve_extraction_find_and_export_after_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ops = "q 0 0 m 50 0 l 60 50 l 10 50 l h W n Q\n".repeat(40_000);
+    // After the old page-total allowance is exhausted, both inner and ancestor clips
+    // must still exclude text. Q must restore the parent's visible region.
+    ops.push_str("q 0 0 m 20 0 l 25 50 l 5 50 l h W n BT /F1 6 Tf 35 10 Td (HIDDEN) Tj ET Q ");
+    let visible = "BT /F1 6 Tf 10 10 Td (INSIDE) Tj ET";
+    ops.push_str(visible);
+    ops.push_str(" BT /F1 6 Tf 100 100 Td (OUTSIDE) Tj ET");
+    let original = fixture(&ops, "/Fm Do", "0 0 50 50", "1 0 0 1 0 0");
+    std::fs::write(dir.path().join("sequential.pdf"), &original).unwrap();
+    std::fs::write(dir.path().join("control.pdf"), fixture(visible, "/Fm Do", "0 0 50 50", "1 0 0 1 0 0")).unwrap();
+    let mut api = Automation::new().with_root(dir.path()).unwrap();
+    let doc = call(&mut api, "doc_open", json!({"path":"sequential.pdf"}))["doc"].as_u64().unwrap();
+    let control = call(&mut api, "doc_open", json!({"path":"control.pdf"}))["doc"].as_u64().unwrap();
+    let pixels = api.render_pixels(control, 1, 1.0).unwrap();
+    assert!(pixels.2.as_chunks::<4>().0.iter().any(|p| p[0] < 255 || p[1] < 255 || p[2] < 255));
+    for stage in ["before", "reopened"] {
+        let id = if stage == "before" {
+            doc
+        } else {
+            call(&mut api, "doc_save", json!({"doc":doc,"path":"saved.pdf"}));
+            call(&mut api, "doc_open", json!({"path":"saved.pdf"}))["doc"].as_u64().unwrap()
+        };
+        assert_eq!(call(&mut api, "text_extract", json!({"doc":id}))["pages"], json!([{"page":1,"text":"INSIDE"}]));
+        for (query, count) in [("INSIDE", 1), ("HIDDEN", 0), ("OUTSIDE", 0)] {
+            let found = call(&mut api, "text_find", json!({"doc":id,"query":query}));
+            assert_eq!(found["count"], count, "{stage} {query}");
+            assert_eq!(found["complete"], true);
+            assert_eq!(found["warning_count"], 0);
+        }
+        let output = format!("{stage}.txt");
+        call(&mut api, "doc_export_text", json!({"doc":id,"path":output}));
+        assert_eq!(std::fs::read(dir.path().join(output)).unwrap(), b"INSIDE\n");
+        assert_eq!(api.render_pixels(id, 1, 1.0).unwrap().2.as_ref(), pixels.2.as_ref(), "{stage}");
+        assert_eq!(call(&mut api, "doc_info", json!({"doc":id}))["document"]["dirty"], false);
+    }
+    assert_eq!(std::fs::read(dir.path().join("sequential.pdf")).unwrap(), original);
+}

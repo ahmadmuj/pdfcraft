@@ -208,8 +208,8 @@ fn mixed_actual_text_does_not_replace_later_redraws_or_weaken_filters() {
 fn crop_box_and_clipping_only_mode_are_not_changed() {
     // The base does not clip extraction to the page. That correction belongs to PR2838.
     assert_eq!(super::page_text("BT /F2 6 Tf 500 500 Td (OUTSIDE-PAGE) Tj ET"), "OUTSIDE-PAGE");
-    // Existing vendor emission skips mode7; PR3116/3191 own that separate behavior.
-    assert_text(&document("BT /F1 6 Tf 7 Tr 10 10 Td (CLIP) Tj ET", BOUNDS, IDENTITY, "/Fm Do", None), "");
+    // Upstream PR3116 emits mode7 for extraction, including when image text is filtered.
+    assert_text(&document("BT /F1 6 Tf 7 Tr 10 10 Td (CLIP) Tj ET", BOUNDS, IDENTITY, "/Fm Do", None), "CLIP");
 }
 
 #[test]
@@ -320,11 +320,11 @@ fn uncertain_and_compound_clips_do_not_clear_the_ancestor() {
 }
 
 #[test]
-fn repeated_clip_intersections_are_bounded_without_limiting_text_length() {
-    // Every q/Q pair restores the same parent, so this tests work rather than stack depth.
+fn sequential_clips_preserve_text_and_later_bounds() {
+    // Restored clips do not increase live complexity, even on a large vector page.
     let mut body = "q 0 0 m 50 0 l 60 50 l 10 50 l h W n Q\n".repeat(40_000);
-    body.push_str("BT /F1 6 Tf 10 10 Td (INSIDE) Tj ET");
-    let pdf = document(&body, BOUNDS, IDENTITY, "/Fm Do", None);
-    let error = extract_page_filtered(&pdf, 0, &InterpreterSettings::default(), TextFilter::default()).unwrap_err();
-    assert_eq!(error, "text clipping limit exceeded");
+    body.push_str("q 0 0 m 20 0 l 25 50 l 5 50 l h W n BT /F1 6 Tf 35 10 Td (HIDDEN) Tj ET Q ");
+    body.push_str("BT /F1 6 Tf 10 10 Td (INSIDE) Tj ET BT /F1 6 Tf 100 100 Td (OUTSIDE) Tj ET");
+    let pdf = document(&body, BOUNDS, IDENTITY, "/Fm Do BT /F1 6 Tf 100 100 Td (PAGE) Tj ET", None);
+    assert_text(&pdf, "PAGE\nINSIDE");
 }

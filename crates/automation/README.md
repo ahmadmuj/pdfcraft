@@ -15,6 +15,12 @@ tools() -> Vec<ToolDef>                                  // name, title, descrip
 mcp::McpServer::new(a).serve(stdin, stdout)?             // newline-delimited JSON-RPC 2.0
 ```
 
+`content_update.rotate` rotates an added image counter-clockwise by an integer multiple of
+90 degrees. Large positive and negative signed 64-bit angles are normalized before combining
+them with the image's current orientation. Full turns retain its appearance, rectangle, crop
+and flips. Angles that are not multiples of 90 are refused without changing the document or
+its undo/redo history.
+
 `Content` is `Json(Value)` or `Png { data, width, height }`. Errors are `UnknownTool`, `InvalidArgs` (the call didn't match the schema) or `Failed` (a readable message for the agent).
 
 ## Conventions
@@ -35,7 +41,8 @@ Text extraction, Find and plain-text export omit glyphs wholly outside supported
 Transformed and nested bounds apply; boundary contact keeps the complete glyph.
 Mixed clipped ActualText uses surviving glyph Unicode; an unmapped survivor cannot recover part of its replacement.
 Arbitrary curved clips, masks and Office export remain separate.
-Excessive clipping returns an extraction error. Find reports it through its existing page warnings.
+Restored sibling clips preserve extraction. Excessive live clip depth or vertex count returns an extraction error.
+Find reports that error through its existing page warnings.
 
 `text_word_count` counts the current snapshot without filling the text cache. It returns totals
 and per-page Unicode word/character counts, with optional tagged-table, tagged-code and

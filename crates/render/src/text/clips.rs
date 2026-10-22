@@ -3,49 +3,24 @@
 use kurbo::{BezPath, PathEl, Point, Vec2};
 use std::sync::Arc;
 
-// Forms already have a nesting limit; explicit path clips need their own storage/work bounds.
-// At this depth each convex intersection has at most 4 * (depth + 1) vertices, so the retained
-// polygons use at most about 4 MiB. Work bounds repeated intersections, not the number of
-// glyphs. Each visibility test stays linear in the bounded region vertex count.
+// Forms already have a nesting limit; explicit path clips need their own bounds.
+// Each intersection has four passes over at most MAX_VERTICES points, bounding work per
+// push. MAX_DEPTH also bounds retained polygons to about 4 MiB. Restored sibling clips
+// do not increase live complexity, so neither their count nor the glyph count is limited.
 const MAX_DEPTH: usize = 256;
-const MAX_WORK: usize = 1 << 22;
 const MAX_VERTICES: usize = 4 * (MAX_DEPTH + 1);
 pub(super) const LIMIT_ERROR: &str = "text clipping limit exceeded";
 
+#[derive(Default)]
 pub(super) struct TextClips {
     stack: Vec<Option<Arc<[Point]>>>,
-    remaining: usize,
     pub(super) exceeded: bool,
 }
 
-impl Default for TextClips {
-    fn default() -> Self {
-        Self { stack: Vec::new(), remaining: MAX_WORK, exceeded: false }
-    }
-}
-
 impl TextClips {
-    fn spend(&mut self, amount: usize) -> bool {
-        if self.exceeded {
-            return false;
-        }
-        match self.remaining.checked_sub(amount) {
-            Some(left) => {
-                self.remaining = left;
-                true
-            }
-            None => {
-                self.exceeded = true;
-                false
-            }
-        }
-    }
-
     pub(super) fn push(&mut self, path: &BezPath) {
-        if self.stack.len() >= MAX_DEPTH {
+        if self.exceeded || self.stack.len() >= MAX_DEPTH {
             self.exceeded = true;
-        }
-        if !self.spend(7) {
             return;
         }
         let previous = self.stack.last().cloned().flatten();
@@ -56,19 +31,13 @@ impl TextClips {
         let region = match previous.as_deref() {
             None => Some(quad),
             Some(old) if old.is_empty() || quad.is_empty() => Some(Vec::new()),
-            Some(old) => {
-                // Four half-plane passes; charge before allocating or scanning their vertices.
-                if !self.spend(old.len().saturating_add(4).saturating_mul(16)) {
+            Some(old) => match intersect(old, &quad) {
+                Ok(region) => region,
+                Err(()) => {
+                    self.exceeded = true;
                     return;
                 }
-                match intersect(old, &quad) {
-                    Ok(region) => region,
-                    Err(()) => {
-                        self.exceeded = true;
-                        return;
-                    }
-                }
-            }
+            },
         };
         // Nonfinite arithmetic is uncertain, not evidence of an empty intersection.
         self.stack.push(region.map(|p| Arc::from(p.into_boxed_slice())).or(previous));
