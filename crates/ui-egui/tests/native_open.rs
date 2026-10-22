@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -208,25 +209,69 @@ fn native_open_reports_a_read_failure_and_continues_in_order() {
     assert_document(h.state(), b_id, 0, "Recipient B", false);
 }
 
+fn encrypted_pdf() -> Vec<u8> {
+    let plain = Session::new().create_from_text("secret", "Secret C").unwrap();
+    let mut document = pdfcraft_cos::Document::open(plain).unwrap();
+    document
+        .set_encryption(&pdfcraft_cos::NewEncryption {
+            algorithm: pdfcraft_cos::Algorithm::Aes256,
+            user_password: "secret",
+            owner_password: "owner",
+            permissions: -4,
+            encrypt_metadata: true,
+            seed: [17; 32],
+        })
+        .unwrap();
+    pdfcraft_cos::write_full(&document, &Default::default()).unwrap()
+}
+
+#[test]
+fn password_cancel_requests_a_frame_before_delivering_a_queued_os_open() {
+    let files = Files::new("password-cancel-wake");
+    let (a, original_a) = files.write("a.pdf", "Recipient A");
+    let (b, original_b) = files.write("b.pdf", "Recipient B");
+    let (mut h, events) = harness(&a, &b);
+    let a_id = h.state().views[0].id;
+    let b_id = h.state().views[1].id;
+    h.state_mut().open_bytes("secret.pdf", None, encrypted_pdf()).unwrap();
+    assert!(h.state().password_prompt.is_some());
+    events.borrow_mut().push(OsEvent::Open(vec![b.clone()]));
+    h.step();
+    assert_eq!(h.state().active_ids().map(|(_, id)| id), Some(a_id));
+    assert_eq!(h.state().views.len(), 2);
+    // Clear egui's settling demand without running application logic or consuming its queue.
+    for _ in 0..2 {
+        let _ = h.ctx.run_logic(&egui::RawInput::default(), |_| {});
+    }
+    assert!(!h.ctx.has_requested_repaint());
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let requested = wakes.clone();
+    h.ctx.set_request_repaint_callback(move |_| {
+        requested.fetch_add(1, Ordering::SeqCst);
+    });
+    assert_eq!(wakes.load(Ordering::SeqCst), 0);
+    h.state_mut().submit_password(None);
+    assert!(h.ctx.has_requested_repaint(), "password cancellation must request the frame that admits the queued OS path");
+    assert_eq!(wakes.load(Ordering::SeqCst), 1, "Cancel wakes the integration before another app frame runs");
+    assert!(h.state().password_prompt.is_none());
+    assert_eq!(h.state().active_ids().map(|(_, id)| id), Some(a_id));
+    // This frame is justified by the wake asserted above, rather than forced until delivery.
+    h.step();
+    assert_eq!(h.state().active_ids().map(|(_, id)| id), Some(b_id));
+    assert_eq!(h.state().views.len(), 2);
+    assert_document(h.state(), a_id, 0, "Recipient A", false);
+    assert_document(h.state(), b_id, 0, "Recipient B", false);
+    assert_eq!(std::fs::read(a).unwrap(), *original_a);
+    assert_eq!(std::fs::read(b).unwrap(), *original_b);
+}
+
 #[test]
 fn native_open_password_retry_or_cancel_retains_later_requests() {
     for cancel in [false, true] {
         let files = Files::new(if cancel { "password-cancel" } else { "password-retry" });
         let (a, _) = files.write("a.pdf", "Recipient A");
         let (b, _) = files.write("b.pdf", "Recipient B");
-        let plain = Session::new().create_from_text("secret", "Secret C").unwrap();
-        let mut document = pdfcraft_cos::Document::open(plain).unwrap();
-        document
-            .set_encryption(&pdfcraft_cos::NewEncryption {
-                algorithm: pdfcraft_cos::Algorithm::Aes256,
-                user_password: "secret",
-                owner_password: "owner",
-                permissions: -4,
-                encrypt_metadata: true,
-                seed: [17; 32],
-            })
-            .unwrap();
-        let encrypted = pdfcraft_cos::write_full(&document, &Default::default()).unwrap();
+        let encrypted = encrypted_pdf();
         let c = files.path("secret.pdf");
         std::fs::write(&c, &encrypted).unwrap();
         let (mut h, events) = harness(&a, &b);
@@ -243,7 +288,11 @@ fn native_open_password_retry_or_cancel_retains_later_requests() {
         assert_eq!(h.state().views.len(), 2, "a wrong password creates no tab");
         h.run_steps(3);
         assert_eq!(h.state().password_prompt.as_ref().unwrap().path.as_deref(), Some(c.as_str()));
-        h.state_mut().submit_password(if cancel { None } else { Some("secret".into()) });
+        if cancel {
+            h.get_by_label("Cancel").click();
+        } else {
+            h.state_mut().submit_password(Some("secret".into()));
+        }
         support::wait_until(&mut h, "B after password completion", |app| {
             app.password_prompt.is_none() && app.views.len() == if cancel { 2 } else { 3 } && app.active_ids().is_some_and(|(_, id)| id == b_id)
         });

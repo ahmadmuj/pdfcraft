@@ -1705,6 +1705,13 @@ impl PdfCraftApp {
             if let Some(meta) = p.recovered {
                 self.recoverable.push(meta);
             }
+            // Native intake ran before this prompt closed; resume retained paths next frame.
+            #[cfg(not(target_arch = "wasm32"))]
+            if !self.pending_os_opens.is_empty()
+                && let Some(ctx) = &self.ctx
+            {
+                ctx.request_repaint();
+            }
             return;
         };
         #[cfg(not(target_arch = "wasm32"))]
