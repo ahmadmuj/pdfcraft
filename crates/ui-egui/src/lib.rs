@@ -3262,11 +3262,20 @@ impl eframe::App for PdfCraftApp {
             self.notify_fmt("Couldn't open {name}: {e}", &[("name", &name), ("e", &e)]);
         }
         let os_events = self.os_events.as_mut().map(|poll| poll()).unwrap_or_default();
+        // Coalesce only paths still waiting for admission, preserving their first occurrence.
+        // Idle frames do not copy a queue held behind a long-lived modal.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut queued_paths: std::collections::HashSet<String> =
+            if os_events.iter().any(|event| matches!(event, OsEvent::Open(paths) if !paths.is_empty())) {
+                self.pending_os_opens.iter().cloned().collect()
+            } else {
+                std::collections::HashSet::new()
+            };
         for e in os_events {
             match e {
                 #[cfg(not(target_arch = "wasm32"))]
                 OsEvent::Open(paths) => {
-                    self.pending_os_opens.extend(paths);
+                    self.pending_os_opens.extend(paths.into_iter().filter(|path| queued_paths.insert(path.clone())));
                     // Files handed to the running app (Finder, or another launch): bring its
                     // window to the front, also when minimized or full screen on another Space.
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -3420,6 +3429,12 @@ impl eframe::App for PdfCraftApp {
 
 impl PdfCraftApp {
     fn finish_render_frame(&mut self, ctx: &egui::Context) {
+        // Dialogs run after native intake in both normal and full-screen views. Resume only
+        // when paths can be admitted next frame; a held modal or worker must not spin repaint.
+        #[cfg(not(target_arch = "wasm32"))]
+        if !self.pending_os_opens.is_empty() && !self.modal_open() && !self.pickers.pending() && self.pending_opens.is_empty() {
+            ctx.request_repaint();
+        }
         // The Combine grid's thumbnails, whichever tab shows (renders under way still finish).
         self.combine_thumbs_frame(ctx);
         // Retire hidden documents before admitting the visible document's textures, so the
@@ -3441,5 +3456,111 @@ impl PdfCraftApp {
                 view.finish_render_frame(ctx, &doc.info, &doc.renderer);
             }
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[allow(clippy::unwrap_used)]
+mod native_os_open_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use eframe::App;
+
+    use super::*;
+
+    #[test]
+    fn pending_native_paths_coalesce_repeats_and_preserve_every_unique_path() {
+        let mut app = PdfCraftApp::new();
+        app.dialog = Some(Dialog::About);
+        let events = Rc::new(RefCell::new(vec![OsEvent::Open(vec!["a.pdf".into(), "b.pdf".into(), "a.pdf".into()])]));
+        let polled = events.clone();
+        app.os_events = Some(Box::new(move || std::mem::take(&mut *polled.borrow_mut())));
+        let ctx = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        let _ = ctx.run_logic(&Default::default(), |ctx| app.logic(ctx, &mut frame));
+        assert_eq!(app.pending_os_opens, ["a.pdf", "b.pdf"], "A,B,A retains the first pending occurrence");
+        let unique: Vec<_> = (0..513).map(|index| format!("unique-{index}.pdf")).collect();
+        events.borrow_mut().extend([OsEvent::Open(vec!["b.pdf".into(), "c.pdf".into(), "a.pdf".into()]), OsEvent::Open(unique.clone())]);
+        let _ = ctx.run_logic(&Default::default(), |ctx| app.logic(ctx, &mut frame));
+        let expected: Vec<_> = ["a.pdf".to_owned(), "b.pdf".to_owned(), "c.pdf".to_owned()].into_iter().chain(unique).collect();
+        assert_eq!(app.pending_os_opens.into_iter().collect::<Vec<_>>(), expected);
+        assert!(app.views.is_empty(), "queued paths must not be read under the modal");
+        assert!(app.pending_opens.is_empty());
+        assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn native_frame_end_wakes_only_an_admissible_queue_before_delivery() {
+        let mut app = PdfCraftApp::new();
+        let ctx = egui::Context::default();
+        app.ctx = Some(ctx.clone());
+        app.pending_os_opens.push_back("/native-frame-end-b.pdf".into());
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let requested = wakes.clone();
+        ctx.set_request_repaint_callback(move |_| {
+            requested.fetch_add(1, Ordering::SeqCst);
+        });
+        let settle = || {
+            for _ in 0..2 {
+                let _ = ctx.run_logic(&Default::default(), |_| {});
+            }
+            wakes.store(0, Ordering::SeqCst);
+            assert!(!ctx.has_requested_repaint());
+        };
+        settle();
+        app.dialog = Some(Dialog::RotatePages);
+        for _ in 0..3 {
+            app.finish_render_frame(&ctx);
+        }
+        assert_eq!(wakes.load(Ordering::SeqCst), 0, "a held modal must not cause continuous repaint");
+        app.dialog = None;
+        app.pick_override = Some(vec![]);
+        assert!(app.ask(pickers::Ask::File(rfd::AsyncFileDialog::new()), None, |_, _| {}));
+        assert!(app.pickers.pending());
+        settle();
+        app.finish_render_frame(&ctx);
+        assert_eq!(wakes.load(Ordering::SeqCst), 0, "the picker must retain its queue without polling");
+        app.process_picked();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        app.pending_opens.push(PendingOpen {
+            token: 1,
+            receiver,
+            name: "held worker".into(),
+            path: None,
+            stamp: None,
+            activate: true,
+            after_open: None,
+            recovered: None,
+            then: None,
+        });
+        settle();
+        app.finish_render_frame(&ctx);
+        assert_eq!(wakes.load(Ordering::SeqCst), 0, "a pending worker supplies its own completion wake");
+        app.pending_opens.clear();
+        settle();
+        app.finish_render_frame(&ctx);
+        assert!(ctx.has_requested_repaint(), "frame end must request delivery after the last blocker closes");
+        assert_eq!(wakes.load(Ordering::SeqCst), 1, "the integration must receive a wake before any delivery frame");
+        assert_eq!(app.pending_os_opens, ["/native-frame-end-b.pdf"]);
+        let bytes = app.session.create_from_text("recipient", "Unchanged recipient").unwrap();
+        app.open_bytes("a.pdf", Some("/native-frame-end-a.pdf".into()), bytes.as_ref().clone()).unwrap();
+        app.open_bytes("b.pdf", Some("/native-frame-end-b.pdf".into()), bytes.as_ref().clone()).unwrap();
+        app.active = Some(0);
+        let b = app.views[1].id;
+        app.poll_os_opens();
+        assert_eq!(app.active_ids().map(|(_, id)| id), Some(b));
+        assert!(app.pending_os_opens.is_empty());
+        for view in &app.views {
+            let doc = app.session.get(view.id).unwrap();
+            assert_eq!(doc.bytes.as_slice(), bytes.as_slice());
+            assert!(!doc.dirty && doc.can_undo().is_none() && doc.can_redo().is_none());
+        }
+        app.active = None;
+        settle();
+        app.finish_render_frame(&ctx);
+        assert_eq!(wakes.load(Ordering::SeqCst), 0, "an empty queue must not keep repainting");
     }
 }

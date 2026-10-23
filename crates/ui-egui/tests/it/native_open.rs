@@ -311,3 +311,65 @@ fn native_open_password_retry_or_cancel_retains_later_requests() {
         assert_eq!(std::fs::read(c).unwrap(), encrypted);
     }
 }
+
+#[test]
+fn pending_duplicate_native_events_keep_first_order_and_allow_later_reopens() {
+    let files = Files::new("pending-dedup");
+    let (a, original_a) = files.write("a.pdf", "Recipient A");
+    let (b, original_b) = files.write("b.pdf", "Recipient B");
+    let (mut h, events) = harness(&a, &b);
+    let a_id = h.state().views[0].id;
+    let b_id = h.state().views[1].id;
+    rotate(&mut h);
+    events.borrow_mut().push(OsEvent::Open(vec![b.clone(), a.clone(), b.clone()]));
+    h.step();
+    events.borrow_mut().push(OsEvent::Open(vec![a.clone(), b.clone()]));
+    h.step();
+    assert_eq!(h.state().active_ids().map(|(_, id)| id), Some(a_id));
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert!(h.state().dialog.is_none());
+    assert_eq!(h.state().active_ids().map(|(_, id)| id), Some(a_id), "B,A,B coalesces to B,A across pending batches");
+    events.borrow_mut().push(OsEvent::Open(vec![b.clone()]));
+    h.step();
+    assert_eq!(h.state().active_ids().map(|(_, id)| id), Some(b_id), "B is a fresh request after its earlier admission");
+    assert_eq!(h.state().views.len(), 2);
+    assert_document(h.state(), a_id, 0, "Recipient A", false);
+    assert_document(h.state(), b_id, 0, "Recipient B", false);
+    assert_eq!(std::fs::read(a).unwrap(), *original_a);
+    assert_eq!(std::fs::read(b).unwrap(), *original_b);
+}
+
+#[test]
+fn native_open_resumes_after_each_rotate_response_in_normal_and_full_screen_views() {
+    for full_screen in [false, true] {
+        for response in ["Cancel", "Escape", "OK"] {
+            let files = Files::new(&format!("rotate-close-{full_screen}-{response}"));
+            let (a, original_a) = files.write("a.pdf", "Recipient A");
+            let (b, original_b) = files.write("b.pdf", "Recipient B");
+            let (mut h, events) = harness(&a, &b);
+            let a_id = h.state().views[0].id;
+            let b_id = h.state().views[1].id;
+            h.state_mut().apply_full_screen(full_screen);
+            rotate(&mut h);
+            events.borrow_mut().push(OsEvent::Open(vec![b.clone()]));
+            h.step();
+            assert_eq!(h.state().active_ids().map(|(_, id)| id), Some(a_id));
+            assert_document(h.state(), a_id, 0, "Recipient A", false);
+            if response == "Escape" {
+                h.key_press(egui::Key::Escape);
+            } else {
+                h.get_by_label(response).click();
+            }
+            h.run_steps(2);
+            assert!(h.state().dialog.is_none(), "{response}, full_screen={full_screen}");
+            assert_eq!(h.state().active_ids().map(|(_, id)| id), Some(b_id));
+            assert_eq!(h.state().views.len(), 2);
+            let edited = response == "OK";
+            assert_document(h.state(), a_id, if edited { 90 } else { 0 }, "Recipient A", edited);
+            assert_document(h.state(), b_id, 0, "Recipient B", false);
+            assert_eq!(std::fs::read(a).unwrap(), *original_a);
+            assert_eq!(std::fs::read(b).unwrap(), *original_b);
+        }
+    }
+}
