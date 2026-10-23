@@ -122,6 +122,8 @@ fn transferable(doc: &Document, annotation: &Dict, usable_properties: bool) -> b
 }
 
 /// Retained annotations keep their replies and pop-ups, including transitive reply chains.
+/// Retention flows to descendants, not parents. Retained children keep their original relationship
+/// keys even when a drawable parent is flattened, as with other undrawn children.
 fn retained_annotations(doc: &Document, list: &[Object], usable_properties: bool) -> HashSet<ObjRef> {
     let mut children: HashMap<ObjRef, Vec<ObjRef>> = HashMap::new();
     let mut pending = Vec::new();
@@ -206,7 +208,16 @@ fn undrawn_on(doc: &Document, all: &[pdfcraft_model::Page], pages: &[usize], whi
     None
 }
 
+/// Runs [`flatten_in`] on a copy of `doc` (unchanged objects are shared) and keeps it only on
+/// success, so a page refused part way leaves the pages before it as they were.
 fn flatten_which(doc: &mut Document, pages: &[usize], which: Which) -> Result<usize, EditError> {
+    let mut work = doc.clone();
+    let drawn = flatten_in(&mut work, pages, which)?;
+    *doc = work;
+    Ok(drawn)
+}
+
+fn flatten_in(doc: &mut Document, pages: &[usize], which: Which) -> Result<usize, EditError> {
     let all = page_list(doc);
     check(pages, all.len())?;
     // `?` in an appearance can still be fixed (a field's value, a comment's text are stored as
@@ -406,6 +417,12 @@ fn flatten_which(doc: &mut Document, pages: &[usize], which: Which) -> Result<us
     Ok(drawn)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many field-tree nodes `prune_fields` visited on this thread.
+    pub(crate) static KEEP_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Remove flattened widgets from the AcroForm field tree, and fields left without widgets. With
 /// `on_page`, also the widgets (fields without kids) that are on no page.
 fn prune_fields(doc: &mut Document, widgets: &HashSet<ObjRef>, on_page: Option<&HashSet<ObjRef>>) -> Result<(), EditError> {
@@ -414,23 +431,59 @@ fn prune_fields(doc: &mut Document, widgets: &HashSet<ObjRef>, on_page: Option<&
     let af_ref = af.as_ref();
     let mut af_dict = doc.resolve(&af).as_dict().cloned().unwrap_or_default();
     let fields = af_dict.get(b"Fields").map(|f| doc.resolve(f)).and_then(|f| f.as_array().cloned()).unwrap_or_default();
-    // Returns whether the node survives.
-    fn keep(doc: &mut Document, r: ObjRef, widgets: &HashSet<ObjRef>, on_page: Option<&HashSet<ObjRef>>, depth: usize) -> bool {
-        if widgets.contains(&r) || depth > 64 {
-            return depth > 64;
+    // Returns whether the node survives, and whether that answer depends on the depth cutoff.
+    // `known` holds each node's answer once it is visited, so a node listed twice is pruned once,
+    // and one still being visited (a cycle) survives. An answer the cutoff decided records the depth
+    // it was reached at, and a shallower path visits the node again: at most once per depth.
+    fn keep(
+        doc: &mut Document,
+        r: ObjRef,
+        widgets: &HashSet<ObjRef>,
+        on_page: Option<&HashSet<ObjRef>>,
+        known: &mut HashMap<ObjRef, (bool, Option<usize>)>,
+        depth: usize,
+    ) -> (bool, bool) {
+        #[cfg(test)]
+        KEEP_CALLS.with(|c| c.set(c.get().saturating_add(1)));
+        if widgets.contains(&r) {
+            return (false, false);
         }
-        let Some(d) = doc.get(r).as_dict().cloned() else { return true };
+        if depth > 64 {
+            return (true, true);
+        }
+        match known.get(&r) {
+            Some(&(survives, None)) => return (survives, false),
+            Some(&(survives, Some(at))) if depth >= at => return (survives, true),
+            _ => {}
+        }
+        known.insert(r, (true, None));
+        let Some(d) = doc.get(r).as_dict().cloned() else { return (true, false) };
         let Some(kids) = d.get(b"Kids").map(|k| doc.resolve(k)).and_then(|k| k.as_array().cloned()) else {
-            return on_page.is_none_or(|p| p.contains(&r));
+            let survives = on_page.is_none_or(|p| p.contains(&r));
+            known.insert(r, (survives, None));
+            return (survives, false);
         };
-        let survivors: Vec<Object> =
-            kids.iter().filter(|k| k.as_ref().is_none_or(|kr| keep(doc, kr, widgets, on_page, depth + 1))).cloned().collect();
+        let mut cut = false;
+        let survivors: Vec<Object> = kids
+            .iter()
+            .filter(|k| {
+                k.as_ref().is_none_or(|kr| {
+                    let (survives, kid_cut) = keep(doc, kr, widgets, on_page, known, depth + 1);
+                    cut |= kid_cut;
+                    survives
+                })
+            })
+            .cloned()
+            .collect();
         if survivors.len() != kids.len() {
             let _ = doc.update_dict(r, |d| d.set(b"Kids".to_vec(), Object::Array(survivors.clone())));
         }
-        !survivors.is_empty()
+        known.insert(r, (!survivors.is_empty(), cut.then_some(depth)));
+        (!survivors.is_empty(), cut)
     }
-    let survivors: Vec<Object> = fields.iter().filter(|f| f.as_ref().is_none_or(|r| keep(doc, r, widgets, on_page, 0))).cloned().collect();
+    let mut known = HashMap::new();
+    let survivors: Vec<Object> =
+        fields.iter().filter(|f| f.as_ref().is_none_or(|r| keep(doc, r, widgets, on_page, &mut known, 0).0)).cloned().collect();
     if survivors.len() == fields.len() && widgets.is_empty() {
         return Ok(()); // only looked for fields on no page, and there were none
     }
