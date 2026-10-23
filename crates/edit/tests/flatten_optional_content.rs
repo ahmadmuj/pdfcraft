@@ -72,6 +72,43 @@ fn flatten_keeps_annotation_optional_content_after_save_and_reopen() {
     assert!(lost.is_empty(), "flattened paint loses its original membership: {lost:?}");
 }
 
+/// Optional and ignored group values must not prevent transfer of the original OCMD.
+#[test]
+fn flatten_accepts_ocmd_group_shapes_after_save_and_reopen() {
+    for groups in [
+        "",
+        "/OCGs null",
+        "/OCGs 999 0 R",
+        "/OCGs 4 0 R",
+        "/OCGs << /Type /OCG /Name (inline) >>",
+        "/OCGs []",
+        "/OCGs [null 999 0 R]",
+        "/OCGs [4 0 R null 999 0 R 5 0 R]",
+    ] {
+        for indirect_groups in [false, true] {
+            let mut doc = fixture(&format!("/OC << /Type /OCMD {groups} /Private (keep OCMD) >>"), 4, "");
+            let annotation = ObjRef::new(8, 0);
+            let mut membership = doc.get(annotation).as_dict().unwrap().get(b"OC").unwrap().as_dict().unwrap().clone();
+            let original_groups = membership.get(b"OCGs").map(|value| (*doc.resolve(value)).clone());
+            if indirect_groups && let Some(groups) = original_groups.clone() {
+                let reference = doc.add(groups);
+                membership.set(b"OCGs".to_vec(), Object::Ref(reference));
+            }
+            let membership = Object::Dict(membership);
+            doc.update_dict(annotation, |d| d.set(b"OC".to_vec(), membership.clone())).unwrap();
+            assert_eq!(pdfcraft_edit::flatten(&mut doc, &[0], true, false).unwrap(), 1, "{groups}, indirect={indirect_groups}");
+            let doc = Document::open(Arc::new(saved(&doc))).unwrap();
+            let paints = paint_memberships(&doc);
+            assert_eq!(paints, vec![(ObjRef::new(7, 0), Some(membership.clone()))]);
+            let reopened_membership = paints.first().unwrap().1.as_ref().unwrap();
+            let reopened_groups = reopened_membership.as_dict().unwrap().get(b"OCGs").map(|value| (*doc.resolve(value)).clone());
+            assert_eq!(reopened_groups, original_groups, "stored group values stay unchanged");
+            let page = pdfcraft_model::pages(&doc).remove(0);
+            assert!(page.dict.get(b"Annots").is_none(), "the valid annotation is flattened");
+        }
+    }
+}
+
 #[test]
 fn flatten_shared_appearance_keeps_separate_memberships_and_original_stream() {
     let mut doc = fixture("/OC 4 0 R", 4, "");
@@ -153,9 +190,32 @@ fn unsupported_membership_keeps_annotations_replies_and_field_links() {
         d.set(b"Type".to_vec(), Object::Name(b"Other".to_vec()));
         d
     });
-    for membership in [Object::Null, Object::Int(7), Object::Ref(ObjRef::new(999, 0)), Object::Ref(ObjRef::new(7, 0)), direct_ocg, wrong_type] {
+    let mut memberships: Vec<_> =
+        [Object::Null, Object::Int(7), Object::Ref(ObjRef::new(999, 0)), Object::Ref(ObjRef::new(7, 0)), direct_ocg, wrong_type]
+            .into_iter()
+            .map(|membership| (membership, false))
+            .collect();
+    for groups in [
+        Object::Int(7),
+        Object::Array(vec![Object::Ref(ObjRef::new(4, 0)), Object::Int(7)]),
+        Object::Ref(ObjRef::new(7, 0)), // A stream is not a group dictionary.
+    ] {
+        for indirect in [false, true] {
+            for expression in [false, true] {
+                let mut membership = pdfcraft_cos::Dict::new();
+                membership.set(b"Type".to_vec(), Object::Name(b"OCMD".to_vec()));
+                membership.set(b"OCGs".to_vec(), groups.clone());
+                if expression {
+                    membership.set(b"VE".to_vec(), Object::Array(vec![Object::Name(b"Not".to_vec()), Object::Ref(ObjRef::new(4, 0))]));
+                }
+                memberships.push((Object::Dict(membership), indirect));
+            }
+        }
+    }
+    for (membership, indirect) in memberships {
         for widget in [false, true] {
             let mut doc = fixture("", 4, "");
+            let membership = if indirect { Object::Ref(doc.add(membership.clone())) } else { membership.clone() };
             let retained = ObjRef::new(8, 0);
             let mut successful = doc.get(retained).as_dict().unwrap().clone();
             successful.remove(b"OC");
@@ -219,16 +279,18 @@ fn unsupported_membership_keeps_annotations_replies_and_field_links() {
             }
             let originals = [retained, reply, grandchild, popup].map(|r| (*doc.get(r)).clone());
             let original_fields = doc.get(ObjRef::new(1, 0)).as_dict().unwrap().get(b"AcroForm").map(|o| (*doc.resolve(o)).clone());
-            assert_eq!(pdfcraft_edit::flatten(&mut doc, &[0], true, true).unwrap(), 1, "{membership:?}");
+            let count = pdfcraft_edit::flatten(&mut doc, &[0], true, true).unwrap();
             let doc = Document::open(Arc::new(saved(&doc))).unwrap();
+            let page = pdfcraft_model::pages(&doc).remove(0);
+            assert_eq!(
+                page.dict.get(b"Annots").map(|value| doc.resolve(value).as_array().unwrap().clone()).unwrap_or_default(),
+                vec![Object::Ref(retained), Object::Ref(reply), Object::Ref(grandchild), Object::Ref(popup)],
+                "saved annotations and descendants must remain reachable: {membership:?}"
+            );
             for (reference, original) in [retained, reply, grandchild, popup].into_iter().zip(originals) {
                 assert_eq!(*doc.get(reference), original);
             }
-            let page = pdfcraft_model::pages(&doc).remove(0);
-            assert_eq!(
-                doc.resolve(page.dict.get(b"Annots").unwrap()).as_array().unwrap(),
-                &vec![Object::Ref(retained), Object::Ref(reply), Object::Ref(grandchild), Object::Ref(popup)]
-            );
+            assert_eq!(count, 1, "{membership:?}");
             assert_eq!(doc.get(ObjRef::new(1, 0)).as_dict().unwrap().get(b"AcroForm").map(|o| (*doc.resolve(o)).clone()), original_fields);
         }
     }

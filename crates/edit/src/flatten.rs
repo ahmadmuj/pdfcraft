@@ -114,7 +114,16 @@ fn transferable(doc: &Document, annotation: &Dict, usable_properties: bool) -> b
     match &*doc.resolve(membership) {
         Object::Dict(d) => match d.name(b"Type") {
             Some(b"OCG") => membership.as_ref().is_some(),
-            Some(b"OCMD") => true,
+            // ISO 32000-1 Table 99 ignores null and deleted groups. Keep annotations
+            // with other unsupported group shapes instead of removing their reply graph.
+            Some(b"OCMD") => match d.get(b"OCGs") {
+                None => true,
+                Some(groups) => match &*doc.resolve(groups) {
+                    Object::Null | Object::Dict(_) => true,
+                    Object::Array(groups) => groups.iter().all(|group| matches!(&*doc.resolve(group), Object::Null | Object::Dict(_))),
+                    _ => false,
+                },
+            },
             _ => false,
         },
         _ => false,
