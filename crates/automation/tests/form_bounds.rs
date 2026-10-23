@@ -10,13 +10,17 @@ fn call(a: &mut Automation, name: &str, args: Value) -> Value {
 }
 
 fn fixture(form: &str, page: &str, bbox: &str, matrix: &str) -> Vec<u8> {
+    fixture_with_font(form, page, bbox, matrix, "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>")
+}
+
+fn fixture_with_font(form: &str, page: &str, bbox: &str, matrix: &str, font: &str) -> Vec<u8> {
     let bodies = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Fm 6 0 R >> >> >>"
             .into(),
         format!("<< /Length {} >>\nstream\n{page}\nendstream", page.len()),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>".into(),
+        font.into(),
         format!(
             "<< /Type /XObject /Subtype /Form /BBox [{bbox}] /Matrix [{matrix}] /Resources << /Font << /F1 5 0 R >> >> /Length {} >>\nstream\n{form}\nendstream",
             form.len()
@@ -151,4 +155,96 @@ fn sequential_clips_preserve_extraction_find_and_export_after_save() {
         assert_eq!(call(&mut api, "doc_info", json!({"doc":id}))["document"]["dirty"], false);
     }
     assert_eq!(std::fs::read(dir.path().join("sequential.pdf")).unwrap(), original);
+}
+
+fn reachable_streams(bytes: Vec<u8>) -> Vec<Vec<u8>> {
+    use pdfcraft_cos::{Document, Object};
+    let doc = Document::open(std::sync::Arc::new(bytes)).unwrap();
+    let mut queue = vec![doc.trailer().get(b"Root").unwrap().clone()];
+    let mut seen = std::collections::HashSet::new();
+    let mut streams = Vec::new();
+    while let Some(object) = queue.pop() {
+        match object {
+            Object::Ref(r) => {
+                if seen.insert(r) {
+                    queue.push((*doc.resolve(&Object::Ref(r))).clone());
+                }
+            }
+            Object::Array(a) => queue.extend(a),
+            Object::Dict(d) => queue.extend(d.iter().map(|(_, v)| v.clone())),
+            Object::Stream(s) => {
+                streams.push(s.decoded_strict().unwrap());
+                queue.extend(s.dict.iter().map(|(_, v)| v.clone()));
+            }
+            _ => {}
+        }
+    }
+    streams
+}
+
+#[test]
+fn query_redaction_removes_clipped_copies_without_polluting_find() {
+    let font = redaction_font();
+    for selector in ["find", "words", "pattern"] {
+        for warm_find in [false, true] {
+            let query = if selector == "pattern" { "x@y.test" } else { "QUERY" };
+            let source = fixture_with_font(
+                &format!("BT /F1 10 Tf 200 200 Td ({query}) Tj ET"),
+                &format!("BT /F1 10 Tf 20 20 Td ({query}) Tj ET /Fm Do"),
+                "0 0 50 50",
+                "1 0 0 1 0 0",
+                &font,
+            );
+            let count =
+                |streams: &[Vec<u8>]| streams.iter().map(|s| s.windows(query.len()).filter(|s| *s == query.as_bytes()).count()).sum::<usize>();
+            assert_eq!(count(&reachable_streams(source.clone())), 2);
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("source.pdf"), source).unwrap();
+            let mut api = Automation::new().with_root(dir.path()).unwrap();
+            let doc = call(&mut api, "doc_open", json!({"path":"source.pdf"}))["doc"].as_u64().unwrap();
+            if warm_find {
+                assert_eq!(call(&mut api, "text_find", json!({"doc":doc,"query":query}))["count"], 1);
+            }
+            let mut args = json!({"doc":doc});
+            args[selector] = match selector {
+                "pattern" => json!("email"),
+                "words" => json!([query]),
+                _ => json!(query),
+            };
+            assert_eq!(call(&mut api, "redact_mark", args)["marked"], 2, "{selector}, warm={warm_find}");
+            // The preserving result must not enter the visual cache, in either operation order.
+            assert_eq!(call(&mut api, "text_find", json!({"doc":doc,"query":query}))["count"], 1);
+            let applied = call(&mut api, "redact_apply", json!({"doc":doc}));
+            assert_eq!(applied["applied"], 2);
+            assert_eq!(applied["marks_pending"], 0);
+            call(&mut api, "doc_save", json!({"doc":doc,"path":"saved.pdf","full":true}));
+            let reopened = call(&mut api, "doc_open", json!({"path":"saved.pdf"}))["doc"].as_u64().unwrap();
+            assert_eq!(call(&mut api, "text_extract", json!({"doc":reopened}))["pages"], json!([{"page":1,"text":""}]));
+            assert_eq!(count(&reachable_streams(std::fs::read(dir.path().join("saved.pdf")).unwrap())), 0, "{selector}");
+        }
+    }
+}
+
+fn redaction_font() -> String {
+    let widths = "600 ".repeat(95);
+    format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding /FirstChar 32 /LastChar 126 /Widths [{widths}] /FontDescriptor << /Type /FontDescriptor /FontName /Courier /Flags 33 /FontBBox [-23 -250 715 805] /ItalicAngle 0 /Ascent 629 /Descent -157 /CapHeight 562 /StemV 51 >> >>"
+    )
+}
+
+#[test]
+fn redaction_verification_rejects_retained_clipped_text_under_a_mark() {
+    let source = fixture_with_font("BT /F1 10 Tf 200 200 Td (QUERY) Tj ET", "/Fm Do", "0 0 50 50", "1 0 0 1 0 0", &redaction_font());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("source.pdf"), &source).unwrap();
+    let mut api = Automation::new().with_root(dir.path()).unwrap();
+    let doc = call(&mut api, "doc_open", json!({"path":"source.pdf"}))["doc"].as_u64().unwrap();
+    // View coordinates cover the retained glyphs, while the form BBox misses this mark.
+    assert_eq!(call(&mut api, "redact_mark", json!({"doc":doc,"page":1,"rect":[195,85,275,110]}))["marked"], 1);
+    let before = call(&mut api, "doc_info", json!({"doc":doc}));
+    let error = api.call("redact_apply", &json!({"doc":doc})).unwrap_err();
+    let pdfcraft_automation::ToolError::Failed(reason) = error else { panic!("unexpected error: {error:?}") };
+    assert_eq!(reason, "redaction could not be verified: 5 item(s) were still found under the marks, so nothing was changed");
+    assert_eq!(call(&mut api, "doc_info", json!({"doc":doc})), before);
+    assert_eq!(std::fs::read(dir.path().join("source.pdf")).unwrap(), source);
 }

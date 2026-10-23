@@ -402,6 +402,7 @@ struct TextDevice {
     actual_filtered: bool,
     actual_clipped: bool,
     clips: clips::TextClips,
+    clip_bounds: bool,
     partial_replacement: bool,
 }
 
@@ -486,6 +487,7 @@ impl TextDevice {
             actual_filtered: false,
             actual_clipped: false,
             clips: clips::TextClips::default(),
+            clip_bounds: true,
             partial_replacement: false,
         }
     }
@@ -632,7 +634,9 @@ impl<'a> Device<'a> for TextDevice {
     fn set_blend_mode(&mut self, _: BlendMode) {}
     fn draw_path(&mut self, _: &BezPath, _: Affine, _: &Paint<'a>, _: &PathDrawMode) {}
     fn push_clip_path(&mut self, clip: &ClipPath) {
-        self.clips.push(&clip.path);
+        if self.clip_bounds {
+            self.clips.push(&clip.path);
+        }
     }
     fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
     fn draw_glyph(&mut self, glyph: &Glyph<'a>, transform: Affine, glyph_transform: Affine, _: &Paint<'a>, mode: &GlyphDrawMode) {
@@ -726,7 +730,9 @@ impl<'a> Device<'a> for TextDevice {
     }
     fn draw_image(&mut self, _: Image<'a, '_>, _: Affine) {}
     fn pop_clip_path(&mut self) {
-        self.clips.pop();
+        if self.clip_bounds {
+            self.clips.pop();
+        }
     }
     fn pop_transparency_group(&mut self) {}
     fn begin_marked_content(&mut self, tag: &[u8], mcid: Option<i32>) {
@@ -759,6 +765,20 @@ pub(crate) fn extract_page(pdf: &Pdf, page: usize, settings: &InterpreterSetting
 }
 
 pub(crate) fn extract_page_filtered(pdf: &Pdf, page: usize, settings: &InterpreterSettings, filter: TextFilter) -> Result<PageText, String> {
+    extract_page_with_clips(pdf, page, settings, filter, true)
+}
+
+pub(crate) fn extract_page_for_redaction(pdf: &Pdf, page: usize, settings: &InterpreterSettings) -> Result<PageText, String> {
+    extract_page_with_clips(pdf, page, settings, TextFilter::default(), false)
+}
+
+fn extract_page_with_clips(
+    pdf: &Pdf,
+    page: usize,
+    settings: &InterpreterSettings,
+    filter: TextFilter,
+    clip_bounds: bool,
+) -> Result<PageText, String> {
     let pages = pdf.pages();
     let p = pages.get(page).ok_or("the page could not be read")?;
     let (w, h) = p.render_dimensions();
@@ -770,6 +790,7 @@ pub(crate) fn extract_page_filtered(pdf: &Pdf, page: usize, settings: &Interpret
     let mut ctx = Context::new(initial, Rect::new(0.0, 0.0, w as f64, h as f64), &cache, p.xref(), settings);
     let mut dev = TextDevice::new();
     dev.filter = filter;
+    dev.clip_bounds = clip_bounds;
     interpret_page(p, &mut ctx, &mut dev);
     if dev.clips.exceeded {
         return Err(clips::LIMIT_ERROR.into());

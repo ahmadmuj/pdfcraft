@@ -159,12 +159,18 @@ fn nested_intersections_and_restoration_preserve_siblings() {
 
 #[test]
 fn actual_text_does_not_restore_clipped_replacement() {
-    for (ops, expected) in [
-        ("/Span <</ActualText (ACTUAL-IN)>> BDC BT /F1 6 Tf 10 10 Td (IN) Tj ET EMC", "ACTUAL-IN"),
-        ("/Span <</ActualText (ACTUAL-OUT)>> BDC BT /F1 6 Tf 100 100 Td (OUT) Tj ET EMC", ""),
-        ("/Span <</ActualText (SECRET VISIBLE)>> BDC BT /F1 6 Tf 100 10 Td (SECRET) Tj ET BT /F1 6 Tf 10 10 Td (VISIBLE) Tj ET EMC", "VISIBLE"),
+    for (ops, expected, redaction) in [
+        ("/Span <</ActualText (ACTUAL-IN)>> BDC BT /F1 6 Tf 10 10 Td (IN) Tj ET EMC", "ACTUAL-IN", "ACTUAL-IN"),
+        ("/Span <</ActualText (ACTUAL-OUT)>> BDC BT /F1 6 Tf 100 100 Td (OUT) Tj ET EMC", "", "ACTUAL-OUT"),
+        (
+            "/Span <</ActualText (SECRET VISIBLE)>> BDC BT /F1 6 Tf 100 10 Td (SECRET) Tj ET BT /F1 6 Tf 10 10 Td (VISIBLE) Tj ET EMC",
+            "VISIBLE",
+            "SECRET VISIBLE",
+        ),
     ] {
-        assert_text(&document(ops, BOUNDS, IDENTITY, "/Fm Do", None), expected);
+        let pdf = document(ops, BOUNDS, IDENTITY, "/Fm Do", None);
+        assert_text(&pdf, expected);
+        assert_eq!(extract_page_for_redaction(&pdf, 0, &InterpreterSettings::default()).unwrap().plain_text(), redaction);
     }
 }
 

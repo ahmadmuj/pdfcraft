@@ -456,6 +456,15 @@ impl PageRenderer {
             .map_err(|e| format!("text extraction failed: {}", panic_message(&e)))?
     }
 
+    /// Extract text for redaction discovery and verification, including geometrically clipped glyphs.
+    /// This preserves source content that visual extraction intentionally omits. Never rasterizes.
+    pub fn redaction_text(&mut self, page: usize) -> Result<crate::PageText, String> {
+        let pdf = self.pdf.as_ref().ok_or("the document could not be parsed")?;
+        self.stats.text_interpretations = self.stats.text_interpretations.saturating_add(1);
+        catch_unwind(AssertUnwindSafe(|| crate::text::extract_page_for_redaction(pdf, page, &self.settings)))
+            .map_err(|e| format!("text extraction failed: {}", panic_message(&e)))?
+    }
+
     /// Render one page. Never panics.
     pub fn render(&mut self, req: RenderRequest) -> RenderedPage {
         let start = Stopwatch::start();
