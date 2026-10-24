@@ -1,5 +1,7 @@
 # PdfCraft roadmap
 
+> **Last reviewed:** 2026-10-24 | **Last updated:** 2026-10-24 | **Change:** minor (M3, #3917: native opens wait for full-screen consent and retry worker admission after one second; estimates unchanged)
+
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away
 
 > **Last reviewed:** 2026-10-22 · **Last updated:** 2026-10-22 · **Change:** minor (M14, #3558: rebase guarded macOS per-file association recovery onto current main; estimates unchanged)
@@ -190,6 +192,8 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 | 8 | 1.0 polish: performance, right-to-left, missing languages, keyboard-only (M14) | 55–95 |
 
 ## Progress log
+
+- **2026-10-24 (M3, #3917 native OS Open):** Full-screen consent retains native paths and ready replies. Worker admission failures retain the FIFO head, notify once, and retry after one second.
 
 - **2026-10-22 (M3, #3917 native OS Open):** OS Open requests wait while a dialog or picker owns the document. Synthetic UI tests verify the saved recipient, request order, duplicate paths and password retry or cancellation. Estimates stay unchanged.
 - **2026-10-22 (M4, #3916 partial):** Document edits and Undo/Redo cancel an Organize page drag. Pointer-release regressions check exact page order and save/reopen.

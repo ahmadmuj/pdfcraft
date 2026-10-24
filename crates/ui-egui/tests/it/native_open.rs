@@ -373,3 +373,57 @@ fn native_open_resumes_after_each_rotate_response_in_normal_and_full_screen_view
         }
     }
 }
+
+fn full_screen_pdf(name: &str, content: &str) -> Vec<u8> {
+    let bytes = Session::new().create_from_text(name, content).unwrap();
+    let mut document = pdfcraft_cos::Document::open(bytes).unwrap();
+    let root = document.root().unwrap();
+    let pdfcraft_cos::Object::Dict(mut catalog) = document.get(root).as_ref().clone() else { panic!("catalog") };
+    catalog.set(b"PageMode".to_vec(), pdfcraft_cos::Object::name("FullScreen"));
+    document.set(root, catalog);
+    pdfcraft_cos::write_full(&document, &Default::default()).unwrap()
+}
+
+#[test]
+fn native_full_screen_consent_retains_existing_and_new_recipients() {
+    for allow in [false, true] {
+        let files = Files::new(&format!("full-screen-{allow}"));
+        let (a, original_a) = files.write("a.pdf", "Recipient A");
+        let (b, original_b) = files.write("b.pdf", "Recipient B");
+        let c = files.path("c.pdf");
+        let original_c = full_screen_pdf("C", "Recipient C");
+        let (mut h, events) = harness(&a, &b);
+        h.state_mut().open_bytes("deck.pdf", None, full_screen_pdf("Deck", "Consent owner")).unwrap();
+        let owner = h.state().active_ids().unwrap().1;
+        let b_id = h.state().views[1].id;
+        h.run_steps(2);
+        events.borrow_mut().push(OsEvent::Open(vec![b.clone(), c.clone()]));
+        h.run_steps(3);
+        assert_eq!(h.state().active_ids().unwrap().1, owner, "existing B must wait for A's consent");
+        assert_eq!(h.state().pending_full_screen, Some(owner));
+        assert_eq!(h.state().views.len(), 3);
+        assert!(h.state().toast.is_none(), "C must not be read while consent is pending");
+        std::fs::write(&c, &original_c).unwrap();
+        h.get_by_label(if allow { "Full Screen" } else { "Not now" }).click();
+        h.step();
+        assert!(h.state().pending_full_screen.is_none(), "the answer closes A's consent after native intake");
+        assert_eq!(h.state().active_ids().unwrap().1, owner);
+        h.step();
+        assert_eq!(h.state().active_ids().unwrap().1, b_id, "existing B is admitted before C");
+        support::wait_until(&mut h, "C's own full-screen consent", |app| app.views.len() == 4 && app.pending_full_screen.is_some());
+        let c_id = h.state().views[3].id;
+        assert_eq!(h.state().pending_full_screen, Some(c_id));
+        assert_eq!(h.state().active_ids().unwrap().1, c_id);
+        assert_eq!(h.state().full_screen, allow);
+        assert_document(h.state(), owner, 0, "Consent owner", false);
+        assert_document(h.state(), b_id, 0, "Recipient B", false);
+        assert_document(h.state(), c_id, 0, "Recipient C", false);
+        for (path, original) in [(a, original_a.as_ref()), (b, original_b.as_ref()), (c, &original_c)] {
+            let saved = Arc::new(std::fs::read(path).unwrap());
+            assert_eq!(saved.as_ref(), original);
+            let mut reopened = Session::new();
+            let id = reopened.open("unchanged", None, saved, None).unwrap();
+            assert_eq!(reopened.get(id).unwrap().info.pages[0].rotation, 0);
+        }
+    }
+}
