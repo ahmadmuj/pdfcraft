@@ -66,7 +66,9 @@ impl Markup {
     }
 }
 
-/// The standard text-annotation icon names (§12.5.6.4, Table 175).
+/// Text-annotation icon names (`/Name`). The first seven are the standard names ISO 32000-2
+/// §12.5.6.4, Table 175 asks every viewer to draw; the rest are further names in common use, which
+/// the same table allows ("Additional names may be supported as well").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NoteIcon {
     #[default]
@@ -77,6 +79,13 @@ pub enum NoteIcon {
     Key,
     NewParagraph,
     Paragraph,
+    Check,
+    Circle,
+    Cross,
+    CrossHairs,
+    Star,
+    RightArrow,
+    UpArrow,
 }
 
 impl NoteIcon {
@@ -89,11 +98,36 @@ impl NoteIcon {
             NoteIcon::Key => "Key",
             NoteIcon::NewParagraph => "NewParagraph",
             NoteIcon::Paragraph => "Paragraph",
+            NoteIcon::Check => "Check",
+            NoteIcon::Circle => "Circle",
+            NoteIcon::Cross => "Cross",
+            NoteIcon::CrossHairs => "CrossHairs",
+            NoteIcon::Star => "Star",
+            NoteIcon::RightArrow => "RightArrow",
+            NoteIcon::UpArrow => "UpArrow",
         }
     }
 
+    /// Every icon, the standard names first.
+    pub const ALL: [NoteIcon; 14] = [
+        Self::Comment,
+        Self::Note,
+        Self::Help,
+        Self::Insert,
+        Self::Key,
+        Self::NewParagraph,
+        Self::Paragraph,
+        Self::Check,
+        Self::Circle,
+        Self::Cross,
+        Self::CrossHairs,
+        Self::Star,
+        Self::RightArrow,
+        Self::UpArrow,
+    ];
+
     pub fn from_name(n: &str) -> Option<Self> {
-        [Self::Comment, Self::Note, Self::Help, Self::Insert, Self::Key, Self::NewParagraph, Self::Paragraph].into_iter().find(|i| i.name() == n)
+        Self::ALL.into_iter().find(|i| i.name() == n)
     }
 }
 
@@ -976,7 +1010,7 @@ fn rect_for(shape: &Shape, style: &Style) -> Result<[f64; 4], AnnotError> {
             grow(bounds([*from, *to].into_iter()).unwrap_or_default(), pad + 1.0)
         }
         Shape::Ink { strokes } | Shape::Signature { strokes } => {
-            if strokes.iter().all(|s| s.is_empty()) || !strokes.iter().flatten().all(|p| finite(p)) {
+            if strokes.iter().all(Vec::is_empty) || !strokes.iter().flatten().all(|p| finite(p)) {
                 return Err(bad("drawing (no points)"));
             }
             // Strokes of three or more points are drawn as curves, which stay within their
@@ -1187,7 +1221,7 @@ pub fn add_annotation(doc: &mut Document, new: &NewAnnotation, meta: &Meta) -> R
             d.set(b"PCOutline".to_vec(), Object::Array(list));
         }
         Shape::CustomStamp { name, picture, image, size, .. } => {
-            let clean: String = name.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+            let clean: String = name.chars().filter(char::is_ascii_alphanumeric).collect();
             d.set(b"Name".to_vec(), Object::name(&format!("PCCustom{clean}")));
             d.set(b"PCPicture".to_vec(), Object::Ref(*picture));
             d.set(b"PCPictureImage".to_vec(), Object::Bool(*image));
