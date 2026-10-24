@@ -415,7 +415,7 @@ pub(crate) fn prune(xo: &mut Dict, replaced: &[Vec<u8>], content: &[Vec<u8>]) {
     }
     let joined = Pieces::join(content);
     let ops = joined.parse().ops;
-    let still_drawn = |n: &[u8]| ops.iter().any(|op| op.is("Do") && op.name(0) == Some(n));
+    let still_drawn = |n: &[u8]| ops.iter().any(|op| op.is("Do") && op.last_name() == Some(n));
     for n in replaced {
         if !still_drawn(n) {
             xo.remove(n);
@@ -430,7 +430,7 @@ fn content_draws(doc: &Document, content: &[Vec<u8>], xo: &Dict, name: &[u8], de
     let joined = Pieces::join(content);
     let ops = joined.parse().ops;
     for op in ops.iter().filter(|op| op.is("Do")) {
-        let Some(n) = op.name(0) else { continue };
+        let Some(n) = op.last_name() else { continue };
         if n == name {
             return Some(true);
         }
@@ -443,8 +443,8 @@ fn content_draws(doc: &Document, content: &[Vec<u8>], xo: &Dict, name: &[u8], de
         if depth >= MAX_DEPTH {
             return None;
         }
-        let Ok(data) = s.decoded() else { return None };
-        match content_draws(doc, std::slice::from_ref(&data), xo, name, depth + 1, seen) {
+        let Ok(_data) = s.decoded() else { return None };
+        match content_draws(doc, content, xo, name, depth + 1, seen) {
             Some(false) => {}
             other => return other,
         }
@@ -616,14 +616,7 @@ fn unlink_from_forms(doc: &mut Document, holders: &[ObjRef], doomed: &HashSet<Ob
                 continue;
             }
             let data = form.decoded()?;
-            let mut pruned = false;
-            for name in doomed_names {
-                match content_draws(doc, std::slice::from_ref(&data), &xo, &name, 0, &mut HashSet::new()) {
-                    Some(true) => {}
-                    Some(false) => pruned |= xo.remove(&name).is_some(),
-                    None => return Err(CosError::Syntax { offset: 0, detail: "redaction could not fully inspect shared form resources".into() }),
-                }
-            }
+            let mut pruned = prune_doomed_xobjects(doc, std::slice::from_ref(&data), &mut xo, &doomed_names)?;
             if pruned {
                 res.set(b"XObject".to_vec(), Object::Dict(xo));
             }
@@ -635,6 +628,18 @@ fn unlink_from_forms(doc: &mut Document, holders: &[ObjRef], doomed: &HashSet<Ob
         }
     }
     Ok(())
+}
+
+fn prune_doomed_xobjects(doc: &Document, content: &[Vec<u8>], xo: &mut Dict, doomed_names: &[Vec<u8>]) -> Result<bool, CosError> {
+    let mut pruned = false;
+    for name in doomed_names {
+        match content_draws(doc, content, xo, name, 0, &mut HashSet::new()) {
+            Some(true) => {}
+            Some(false) => pruned |= xo.remove(name).is_some(),
+            None => return Err(CosError::Syntax { offset: 0, detail: "redaction could not fully inspect shared form resources".into() }),
+        }
+    }
+    Ok(pruned)
 }
 
 /// The clip that hides everything inside each region: one even-odd clip per region (a big
@@ -672,7 +677,7 @@ fn resource_ops(doc: &Document, res: &Dict, content: &[Vec<u8>]) -> Result<Vec<O
     while cursor < ops.len() {
         let op = &ops[cursor];
         if op.is("Do")
-            && let Some(r) = op.name(0).and_then(|n| xobjects.get(n)).and_then(Object::as_ref)
+            && let Some(r) = op.last_name().and_then(|n| xobjects.get(n)).and_then(Object::as_ref)
             && seen.insert(r)
             && let Object::Stream(s) = &*doc.get(r)
             && s.dict.name(b"Subtype") == Some(b"Form")
@@ -717,7 +722,7 @@ fn prune_form_resources(doc: &Document, res: &mut Dict, content: &[Vec<u8>]) -> 
     let mut xo = res_dict(doc, res, b"XObject");
     let names: Vec<Vec<u8>> = xo.iter().map(|(n, _)| n.to_vec()).collect();
     for name in names {
-        if !ops.iter().any(|op| op.is("Do") && op.name(0) == Some(&name)) {
+        if !ops.iter().any(|op| op.is("Do") && op.last_name() == Some(&name)) {
             xo.remove(&name);
         }
     }
@@ -1204,7 +1209,7 @@ fn xobject(
     xobjects: &mut Dict,
     out: &mut Output,
 ) -> Option<Option<Op>> {
-    let name = op.name(0)?.to_vec();
+    let name = op.last_name()?.to_vec();
     let r = xobjects.get(&name)?.as_ref()?;
     let obj = doc.get(r);
     let Object::Stream(s) = &*obj else { return None };
