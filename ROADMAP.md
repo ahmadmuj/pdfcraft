@@ -3,7 +3,6 @@
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away
 
 > **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M2, #3503 partial: align bounded extraction and redaction preservation with current main; estimates unchanged)
-> **Last reviewed:** 2026-10-22 · **Last updated:** 2026-10-22 · **Change:** minor (M14, #3558: rebase guarded macOS per-file association recovery onto current main; estimates unchanged)
 > **Last reviewed:** 2026-10-23 | **Last updated:** 2026-10-23 | **Change:** minor (M8, #3205 follow-up: labelled Italian international phone numbers with a slash match whole; estimates unchanged)
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M7, #2636 partial: pasting added text boxes and images in the engine and through `content_copy`; estimates unchanged)
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M11: image optimization accounts for page-local UserUnit; estimates unchanged)
@@ -200,9 +199,9 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 | 8 | 1.0 polish: performance, right-to-left, missing languages, keyboard-only (M14) | 55–95 |
 
 ## Progress log
-- **2026-10-23 (M2, #3503 partial):** Extraction, Find and plain-text export omit text wholly outside supported transformed and nested form bounds and convex quadrilateral clips. Near-degenerate bounds and clipped ActualText retain their controls. Sequential restored clips preserve text; live depth and vertex caps still refuse excessive clipping. Query redaction and verification include clipped glyphs when finding text to remove. Tests cover decoded saved content, save/reopen and unchanged pixels. Office export and arbitrary curved clips remain separate. Estimates unchanged.
 
 - **2026-10-24 (M14, #4253):** The annotation quick bar remembers Keep tool selected across restarts, including unpinning. Old and malformed settings keep safe defaults; the opt-in UI control channel reads and changes the same preference. Estimates unchanged.
+- **2026-10-23 (M2, #3503 partial):** Extraction, Find and plain-text export omit text wholly outside supported transformed and nested form bounds and convex quadrilateral clips. Near-degenerate bounds and clipped ActualText retain their controls. Sequential restored clips preserve text; live depth and vertex caps still refuse excessive clipping. Query redaction and verification include clipped glyphs when finding text to remove. Tests cover decoded saved content, save/reopen and unchanged pixels. Office export and arbitrary curved clips remain separate. Estimates unchanged.
 
 - **2026-10-23 (M7, #4280):** Edit text names each standard stand-in font after its face (`PCEdTimesBold`, ...) instead of one shared `PCEdHelv`. Rewriting a bold paragraph whose subset lacks an accent no longer repoints the paragraphs set earlier in a regular stand-in at Times-Bold, and the editor's frame stays on the paragraph being edited. Pages saved by older builds keep their shared name and are not repaired. Estimates unchanged.
 - **2026-10-23 (M8, #3205 follow-up):** Phone-pattern redaction matches complete labelled Italian geographic numbers such as `Tel. +39 0426/123456`, with synthetic matcher and mark/apply/save/reopen coverage; unlabelled international slash numbers remain unsupported.
