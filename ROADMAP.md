@@ -1,5 +1,7 @@
 # PdfCraft roadmap
 
+> **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M10/M13, #3919 partial: align worker recovery with current main. Preserve upstream behavior and native failure tests. Estimates unchanged.)
+
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away
 
 > **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M2, #3503 partial: align bounded extraction and redaction preservation with current main; estimates unchanged)
@@ -201,6 +203,13 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 ## Progress log
 
+- 2026-10-25: #3919 partial: align worker recovery with current main. Preserve upstream behavior and exact native failure regressions. Estimates unchanged.
+
+- 2026-10-24: #3919 partial: align worker recovery with current main. Preserve Organize drag cancellation and exact native failure regressions. Estimates unchanged.
+
+- 2026-10-23: #3919 partial: align Export and Action Wizard worker recovery with current main. Preserve migrated test references and native regression evidence. Estimates unchanged.
+
+- 2026-10-22: #3919 partial: Export and Action Wizard report worker panics and launch failures. Native regressions check exact retry output, source state, partial results, collision names, and locale.
 - **2026-10-24 (M14, #4253):** The annotation quick bar remembers Keep tool selected across restarts, including unpinning. Old and malformed settings keep safe defaults; the opt-in UI control channel reads and changes the same preference. Estimates unchanged.
 - **2026-10-23 (M2, #3503 partial):** Extraction, Find and plain-text export omit text wholly outside supported transformed and nested form bounds and convex quadrilateral clips. Near-degenerate bounds and clipped ActualText retain their controls. Sequential restored clips preserve text; live depth and vertex caps still refuse excessive clipping. Query redaction and verification include clipped glyphs when finding text to remove. Tests cover decoded saved content, save/reopen and unchanged pixels. Office export and arbitrary curved clips remain separate. Estimates unchanged.
 
@@ -684,6 +693,8 @@ Newest first: the date, what moved, and the new overall estimate.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | minor | M10/M13, #3919 partial: align worker recovery with current main. Preserve upstream behavior and native failure tests. Estimates unchanged. |
+| 2026-10-22 | minor | M10/M13, #3919 partial: Export and Action Wizard report worker panics and launch failures. Action Wizard keeps completed files. Estimates unchanged. |
 | 2026-10-23 | minor | M8, #3205 follow-up: phone-pattern redaction includes the +39 country code on labelled Italian geographic numbers with a slash; dates, protocol identifiers and whole-run guards remain. Estimates unchanged. |
 | 2026-10-23 | minor | M11: image downsampling measures physical resolution after page-local UserUnit scaling, including shared nested forms; synthetic measurement and optimization regressions. Estimates unchanged. |
 | 2026-10-23 | minor | M10: Word table cells use the grid columns they span, including cells after a merged cell; synthetic export regression and CLI reproduction. Estimates unchanged. |
