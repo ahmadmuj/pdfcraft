@@ -50,6 +50,7 @@ mod javascript;
 mod layer_actions;
 mod links;
 mod marks;
+mod native_open;
 mod object_selection;
 mod ocr;
 mod open_action;

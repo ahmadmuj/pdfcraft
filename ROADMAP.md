@@ -1,6 +1,7 @@
 # PdfCraft roadmap
 
 > **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M10/M13, #3919 partial: align worker recovery with current main. Preserve upstream behavior and native failure tests. Estimates unchanged.)
+> **Last reviewed:** 2026-10-24 | **Last updated:** 2026-10-24 | **Change:** minor (M3, #3917: native opens wait for full-screen consent and retry worker admission after one second; estimates unchanged)
 
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away
 
@@ -210,6 +211,9 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 - 2026-10-23: #3919 partial: align Export and Action Wizard worker recovery with current main. Preserve migrated test references and native regression evidence. Estimates unchanged.
 
 - 2026-10-22: #3919 partial: Export and Action Wizard report worker panics and launch failures. Native regressions check exact retry output, source state, partial results, collision names, and locale.
+- **2026-10-24 (M3, #3917 native OS Open):** Full-screen consent retains native paths and ready replies. Worker admission failures retain the FIFO head, notify once, and retry after one second.
+
+- **2026-10-22 (M3, #3917 native OS Open):** OS Open requests wait while a dialog or picker owns the document. Synthetic UI tests verify the saved recipient, request order, duplicate paths and password retry or cancellation. Estimates stay unchanged.
 - **2026-10-24 (M14, #4253):** The annotation quick bar remembers Keep tool selected across restarts, including unpinning. Old and malformed settings keep safe defaults; the opt-in UI control channel reads and changes the same preference. Estimates unchanged.
 - **2026-10-23 (M2, #3503 partial):** Extraction, Find and plain-text export omit text wholly outside supported transformed and nested form bounds and convex quadrilateral clips. Near-degenerate bounds and clipped ActualText retain their controls. Sequential restored clips preserve text; live depth and vertex caps still refuse excessive clipping. Query redaction and verification include clipped glyphs when finding text to remove. Tests cover decoded saved content, save/reopen and unchanged pixels. Office export and arbitrary curved clips remain separate. Estimates unchanged.
 
