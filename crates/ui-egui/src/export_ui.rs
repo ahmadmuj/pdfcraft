@@ -549,4 +549,58 @@ mod tests {
         assert_eq!(std::fs::read(&blocked).unwrap(), b"keep destination");
         assert_eq!(source_state(&app), before_state);
     }
+
+    #[test]
+    fn integration_export_completion_keeps_modal_recipient_and_wakes_native_intake() {
+        use eframe::App as _;
+        let dir = Folder::new("integration-native-queue");
+        let mut app = app();
+        let a = app.active_ids().unwrap().1;
+        let before = source_state(&app);
+        let b_bytes = pdfcraft_engine::Session::new().create_from_text("B", "Queued B").unwrap();
+        let b_path = dir.0.join("b.pdf");
+        std::fs::write(&b_path, b_bytes.as_slice()).unwrap();
+        let b_path = b_path.to_string_lossy().into_owned();
+        app.open_bytes("b.pdf", Some(b_path.clone()), b_bytes.as_ref().clone()).unwrap();
+        let b = app.active_ids().unwrap().1;
+        app.active = Some(0);
+        let ctx = egui::Context::default();
+        app.ctx = Some(ctx.clone());
+        app.dialog = Some(crate::Dialog::Export(ExportKind::Text));
+        let mut events = vec![crate::OsEvent::Open(vec![b_path.clone()])];
+        app.os_events = Some(Box::new(move || std::mem::take(&mut events)));
+        let (tx, rx) = mpsc::channel();
+        start(&mut app, &dir.0, Fault { panic: true, finished: Some(tx), ..Default::default() });
+        assert!(rx.recv_timeout(Duration::from_secs(10)).unwrap());
+        let mut frame = eframe::Frame::_new_kittest();
+        ctx.run_ui(Default::default(), |ui| app.logic(ui.ctx(), &mut frame)).drop_without_applying_deltas();
+        assert!(app.export_status.is_none(), "real worker completion clears running state");
+        assert_eq!(app.pending_os_opens, [b_path]);
+        assert_eq!(app.active_ids().unwrap().1, a);
+        assert_eq!(source_state(&app), before);
+        assert_eq!(app.dialog, Some(crate::Dialog::Export(ExportKind::Text)));
+        for _ in 0..2 {
+            let _ = ctx.run_logic(&Default::default(), |_| {});
+        }
+        assert!(!ctx.has_requested_repaint());
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let requested = wakes.clone();
+        ctx.set_request_repaint_callback(move |info| {
+            if info.delay == Duration::ZERO {
+                requested.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        app.dialog = None;
+        app.finish_render_frame(&ctx);
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1, "modal release needs a fresh immediate wake before intake");
+        assert_eq!(app.active_ids().unwrap().1, a, "frame tail does not deliver the request");
+        ctx.run_ui(Default::default(), |ui| app.logic(ui.ctx(), &mut frame)).drop_without_applying_deltas();
+        assert!(app.pending_os_opens.is_empty());
+        assert_eq!(app.active_ids().unwrap().1, b);
+        assert_eq!(app.views.len(), 2, "existing B is focused once");
+        assert_eq!(app.session.get(b).unwrap().bytes.as_slice(), b_bytes.as_slice());
+        app.active = Some(0);
+        assert_eq!(source_state(&app), before);
+        assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1, "failed export writes no result beside B");
+    }
 }

@@ -1,0 +1,182 @@
+name: Contribution integration artifacts
+
+# Only tests six existing upstream proposals. No release or wider distribution.
+on:
+  push:
+    branches: [test/pdfcraft-integration-20261025]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The shared gate doesn't check where git dependencies come from; release.yml runs the same job.
+  git-sources:
+    if: github.repository == 'ahmadmuj/pdfcraft' && github.ref == 'refs/heads/test/pdfcraft-integration-20261025'
+    name: Git dependencies come from storytold
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Git dependencies come from storytold
+        run: |
+          set -euo pipefail
+          test -f Cargo.lock || { echo "Cargo.lock is missing"; exit 1; }
+          # Source replacement, patches and path overrides in cargo config never show up
+          # in Cargo.lock. Parsed rather than grepped: TOML has many spellings of one key.
+          # Cargo still reads the legacy .cargo/config.
+          python3 - <<'PY'
+          import os, sys, tomllib
+          for path in (".cargo/config", ".cargo/config.toml"):
+              if not os.path.exists(path):
+                  continue
+              config = tomllib.load(open(path, "rb"))
+              replaced = [name for name, source in config.get("source", {}).items()
+                          if isinstance(source, dict) and "replace-with" in source]
+              if replaced or "patch" in config or "paths" in config:
+                  print(f"{path} replaces, patches or overrides a source")
+                  sys.exit(1)
+          PY
+          # Fails when Cargo.lock is out of date with the manifests.
+          cargo metadata --locked --format-version 1 > /dev/null
+          python3 - <<'PY'
+          import sys, tomllib
+          lock = tomllib.load(open("Cargo.lock", "rb"))
+          bad = sorted({p["source"] for p in lock.get("package", [])
+                        if p.get("source", "").startswith("git+")
+                        and not p["source"].startswith("git+https://github.com/storytold/")})
+          if bad:
+              print("Git dependencies outside github.com/storytold:", *bad, sep="\n")
+              sys.exit(1)
+          PY
+
+  gate:
+    if: github.repository == 'ahmadmuj/pdfcraft' && github.ref == 'refs/heads/test/pdfcraft-integration-20261025'
+    # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository.
+    uses: storytold/craft-common-actions/.github/workflows/gate.yml@main
+    with:
+      # Windows on main, manual runs and pull requests labelled `full-ci`. No macOS on PRs or main:
+      # the org's 5 macOS slots are kept for release builds, and release.yml builds macOS.
+      os: '["ubuntu-24.04","windows-latest"]'
+      # Same craft-fonts commit as release.yml and freebsd.yml.
+      craft-fonts-ref: 3d9ab3a132ed0eff457e424226a435a901da30d3
+      # egui/winit/rfd, and the independent oracles (crates/oracle).
+      packages: >-
+        libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+        libgtk-3-dev qpdf poppler-utils
+      # cargo-deny for the deny step of `cargo xtask ci`, which requires it under CI.
+      tools: cargo-nextest@0.9.149,cargo-deny@0.20.2
+      # A missing oracle fails the job instead of printing a skip notice that reads as a pass.
+      env: |
+        CARGO_BUILD_JOBS=2
+        RUST_TEST_THREADS=2
+      linux-env: PDFCRAFT_ORACLES_REQUIRED=1
+      windows-env: PDFCRAFT_REQUIRE_WINRES=1
+      # Windows checks what differs by platform: the build (with resources) and the tests.
+      windows-command: |
+        cargo clippy --workspace --all-targets --locked -- -D warnings
+        cargo test --workspace --locked
+
+  windows-portable:
+    if: github.repository == 'ahmadmuj/pdfcraft' && github.ref == 'refs/heads/test/pdfcraft-integration-20261025'
+    needs: [git-sources, gate]
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: candidate
+            source: ${{ github.sha }}
+            label: integration20261025
+          - variant: frozen-main
+            source: 418ac6a2af49b7ac2fed44ca2cae8d5d1d2cec0d
+            label: baseline20261025
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-integration
+      CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+      CRAFT_FONTS_REQUIRED: "1"
+      PDFCRAFT_REQUIRE_WINRES: "1"
+      PDFCRAFT_SYSTEM_FONTS: "0"
+      PDFCRAFT_BUILD_SHA: ${{ matrix.source }}
+      PDFCRAFT_BUILD_LABEL: ${{ matrix.label }}
+      DIST: ${{ github.workspace }}/dist/integration
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.source }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: storytold/craft-fonts
+          ref: 3d9ab3a132ed0eff457e424226a435a901da30d3
+          path: craft-fonts
+          persist-credentials: false
+      - uses: storytold/craft-common-actions/actions/checkout-craft-i18n@main
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+      - name: Install WiX 5.0.2
+        shell: pwsh
+        run: |
+          dotnet tool install wix --version 5.0.2 --tool-path "$env:RUNNER_TEMP/wix"
+          if ($LASTEXITCODE -ne 0) { throw 'WiX setup fails' }
+          "$env:RUNNER_TEMP/wix" >> $env:GITHUB_PATH
+      - name: Build unsigned contributor test package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:DIST | Out-Null
+          $manifest = [ordered]@{
+            purpose = 'Contributor-only testing of six existing upstream proposals; no release or wider distribution'
+            source_sha = (git rev-parse HEAD)
+            source_tree = (git rev-parse 'HEAD^{tree}')
+            workflow_sha = '${{ github.workflow_sha }}'
+            workflow_branch_sha = '${{ github.sha }}'
+            variant = '${{ matrix.variant }}'
+            run_url = '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+            font_sha = (git -C craft-fonts rev-parse HEAD)
+            rustc = (rustc --version)
+            cargo = (cargo --version)
+            wix = (wix --version)
+            visual_studio = (& "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion)
+            resource_compiler = @((Get-Item "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/rc.exe").VersionInfo.FileVersion)
+            msvc_compiler = @((& "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe') | ForEach-Object { (Get-Item $_).VersionInfo.FileVersion })
+            windows_sdk = @((Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin" -Directory).Name)
+            font_manifest_sha256 = (Get-FileHash -Algorithm SHA256 craft-fonts/fonts/manifest.txt).Hash.ToLowerInvariant()
+            os = [System.Environment]::OSVersion.VersionString
+            signed = $false
+          }
+          if ($manifest.source_sha -ne $env:PDFCRAFT_BUILD_SHA) { throw 'Source SHA mismatch' }
+          $manifest | ConvertTo-Json | Set-Content "$env:DIST/manifest.json"
+          & ./packaging/windows/package.ps1 -Arch x64 *>&1 | Tee-Object "$env:DIST/package.log"
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging fails' }
+          $zip = Get-Item "$env:DIST/*-windows-x64-portable.zip"
+          $trial = Join-Path $env:RUNNER_TEMP 'portable path with spaces'
+          Expand-Archive $zip.FullName $trial
+          $cli = Get-ChildItem $trial -Recurse -Filter pdfcraft-cli.exe
+          if ($cli.Count -ne 1) { throw 'Expected one extracted CLI' }
+          $portable = Join-Path $cli.DirectoryName 'portable.txt'
+          if (-not (Test-Path $portable)) { throw 'portable.txt missing' }
+          & $cli.FullName --version | Tee-Object "$env:DIST/extracted-cli.log"
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted CLI fails' }
+          Get-ChildItem $env:DIST -File | Where-Object { $_.Extension -eq ".zip" -or $_.Name -eq "manifest.json" -or $_.Extension -eq ".log" } | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content "$env:DIST/SHA256SUMS"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: contributor-${{ matrix.variant }}-windows-x64-${{ matrix.source }}
+          path: |
+            dist/integration/*-windows-x64-portable.zip
+            dist/integration/manifest.json
+            dist/integration/SHA256SUMS
+            dist/integration/*.log
+          if-no-files-found: error
+          retention-days: 14
