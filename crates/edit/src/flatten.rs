@@ -271,6 +271,31 @@ fn flatten_which(doc: &mut Document, pages: &[usize], which: Which) -> Result<us
     Ok(drawn)
 }
 
+fn prepare_appearances(doc: &mut Document, list: &[Object], which: Which, retained: &HashSet<ObjRef>, usable_properties: bool) {
+    // A viewer draws many comments from their dictionary even when the file stores no
+    // appearance (notes, FreeText, ink, stamps…). Build the appearance it would show, so
+    // flattening keeps a comment that still has ink on screen instead of deleting it.
+    for entry in list {
+        let Some(r) = entry.as_ref() else { continue };
+        if retained.contains(&r) {
+            continue;
+        }
+        let d = doc.resolve(entry).as_dict().cloned().unwrap_or_default();
+        let subtype = d.name(b"Subtype").unwrap_or_default();
+        if subtype == b"Widget" || !selected(doc, &d, which) || !transferable(doc, &d, usable_properties) {
+            continue;
+        }
+        let flags = d.get(b"F").and_then(|f| doc.resolve(f).as_int()).unwrap_or(0);
+        if flags & (HIDDEN | NO_VIEW) != 0 || appearance(doc, &d).is_some() {
+            continue;
+        }
+        // A subtype this build cannot draw fails here and is kept below, so the comment is
+        // not deleted with nothing drawn in its place. (Text the standard fonts can't draw
+        // was refused before anything changed: `undrawn_on`.)
+        let _ = pdfcraft_annot::set_appearance(doc, r);
+    }
+}
+
 fn flatten_in(doc: &mut Document, pages: &[usize], which: Which) -> Result<usize, EditError> {
     let all = page_list(doc);
     check(pages, all.len())?;
@@ -310,28 +335,7 @@ fn flatten_in(doc: &mut Document, pages: &[usize], which: Which) -> Result<usize
         // Selected, but nothing was drawn for it: it stays, pop-up and reply handling included.
         let mut undrawn: HashSet<ObjRef> = HashSet::new();
         let rotation = page.dict.get(b"Rotate").map(|r| doc.resolve(r)).and_then(|r| r.as_int()).unwrap_or(0);
-        // A viewer draws many comments from their dictionary even when the file stores no
-        // appearance (notes, FreeText, ink, stamps…). Build the appearance it would show, so
-        // flattening keeps a comment that still has ink on screen instead of deleting it.
-        for entry in &list {
-            let Some(r) = entry.as_ref() else { continue };
-            if retained.contains(&r) {
-                continue;
-            }
-            let d = doc.resolve(entry).as_dict().cloned().unwrap_or_default();
-            let subtype = d.name(b"Subtype").unwrap_or_default();
-            if subtype == b"Widget" || !selected(doc, &d, which) || !transferable(doc, &d, existing_properties.is_some()) {
-                continue;
-            }
-            let flags = d.get(b"F").and_then(|f| doc.resolve(f).as_int()).unwrap_or(0);
-            if flags & (HIDDEN | NO_VIEW) != 0 || appearance(doc, &d).is_some() {
-                continue;
-            }
-            // A subtype this build cannot draw fails here and is kept below, so the comment is
-            // not deleted with nothing drawn in its place. (Text the standard fonts can't draw
-            // was refused before anything changed: `undrawn_on`.)
-            let _ = pdfcraft_annot::set_appearance(doc, r);
-        }
+        prepare_appearances(doc, &list, which, &retained, existing_properties.is_some());
         for (k, entry) in list.iter().enumerate() {
             let obj = doc.resolve(entry);
             let Some(d) = obj.as_dict() else { continue };
