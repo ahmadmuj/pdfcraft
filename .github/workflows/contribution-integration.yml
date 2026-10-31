@@ -1,0 +1,64 @@
+# DRAFT ONLY. No publication or execution occurs in preparation024.
+name: Bounded Comments timing comparison
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: comments-comparison-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  comparison:
+    if: github.repository == 'ahmadmuj/pdfcraft' && github.ref == 'refs/heads/verify/comments-timing-20261031'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      RUSTUP_TOOLCHAIN: '1.99.1'
+      RUST_BACKTRACE: '1'
+      CRAFT_FONTS_REQUIRED: '1'
+      PDFCRAFT_ORACLES_REQUIRED: '1'
+      PDFCRAFT_SYSTEM_FONTS: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: storytold/pdfcraft
+          ref: f137a289baadefbd29e0e46930899896068cc41d
+          path: source-A
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: storytold/pdfcraft
+          ref: 52f729116d0c153644d7560244f77e20c023cbfb
+          path: source-B
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: storytold/craft-fonts
+          ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+          path: fonts
+          persist-credentials: false
+      - name: Install the reviewed system dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup default 1.99.1
+      - name: Run the bounded comparison
+        shell: bash
+        env:
+          EXPECTED_HARNESS: ${{ github.sha }}
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/fonts
+        run: |
+          set -euo pipefail
+          test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HARNESS"
+          bash harness/timing-comparison.draft.sh
