@@ -1,0 +1,18 @@
+--- a/crates/edit/src/flatten.rs
++++ b/crates/edit/src/flatten.rs
+@@ -367,15 +367,11 @@
+                             }
+                             continue;
+                         };
+-                        content.push_str(&format!("/OC /{name} BDC\n"));
+                         added_properties.set(name.into_bytes(), membership.clone());
+                     }
+                     let m = if flags & NO_ROTATE != 0 { upright(m, rotation, rect) } else { m };
+                     let name = xobject_name(&existing_xo, &xobjects, &mut name_n);
+                     content.push_str(&format!("q {} {} {} {} {} {} cm /{name} Do Q\n", n(m[0]), n(m[1]), n(m[2]), n(m[3]), n(m[4]), n(m[5])));
+-                    if d.contains(b"OC") {
+-                        content.push_str("EMC\n");
+-                    }
+                     xobjects.set(name.into_bytes(), Object::Ref(ap));
+                     drawn += 1;
+                     drew = true;

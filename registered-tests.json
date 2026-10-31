@@ -1,0 +1,39 @@
+{
+  "render": [
+    "text::tests::form_bounds::near_degenerate_outer_form_excludes_wholly_outside_text",
+    "text::tests::form_bounds::finite_small_clips_keep_inside_and_contact_but_exclude_separated_points",
+    "text::tests::form_bounds::near_degenerate_nested_clips_keep_their_intersection_and_restore",
+    "text::tests::form_bounds::extreme_axis_ratios_preserve_boundary_contact",
+    "text::tests::form_bounds::transformed_forms_exclude_outside_text",
+    "text::tests::form_bounds::enclosing_rectangles_do_not_keep_hidden_rotated_or_sheared_glyphs",
+    "text::tests::form_bounds::nested_intersections_and_restoration_preserve_siblings",
+    "text::tests::form_bounds::actual_text_does_not_restore_clipped_replacement",
+    "text::tests::form_bounds::empty_form_bounds_exclude_all_text",
+    "text::tests::form_bounds::boundary_and_invisible_text_preserve_existing_policy",
+    "text::tests::form_bounds::unsupported_clips_and_repeated_forms_restore_supported_ancestors",
+    "text::tests::form_bounds::mixed_actual_text_does_not_replace_later_redraws_or_weaken_filters",
+    "text::tests::form_bounds::upstream_crop_box_and_clipping_only_mode_are_preserved",
+    "text::tests::form_bounds::clip_geometry_retains_contact_and_degeneracy_but_rejects_separation",
+    "text::tests::form_bounds::intersected_quadrilaterals_keep_more_than_four_boundary_edges",
+    "text::tests::form_bounds::mixed_replacement_does_not_invent_unicode_for_unmapped_survivors",
+    "text::tests::form_bounds::dense_text_inside_simple_and_nested_forms_remains_complete",
+    "text::tests::form_bounds::uncertain_and_compound_clips_do_not_clear_the_ancestor",
+    "text::tests::form_bounds::sequential_clips_preserve_text_and_later_bounds",
+    "text::tests::form_bounds::redaction_retains_inside_page_text_outside_form_bounds",
+    "text::tests::text_outside_the_crop_box_is_clipped"
+  ],
+  "automation": [
+    "form_bounds::form_bounds_survive_extraction_find_export_and_save",
+    "form_bounds::mixed_actual_text_never_exports_the_hidden_replacement",
+    "form_bounds::clipping_limits_report_the_cause_without_partial_export",
+    "form_bounds::sequential_clips_preserve_extraction_find_and_export_after_save",
+    "form_bounds::query_redaction_removes_clipped_copies_without_polluting_find",
+    "form_bounds::redaction_verification_rejects_retained_clipped_text_under_a_mark"
+  ],
+  "owner": [
+    "owner_password::info_accepts_the_owner_password",
+    "owner_password::text_accepts_the_owner_password",
+    "owner_password::render_accepts_the_owner_password",
+    "owner_password::audit_places_findings_with_the_owner_password"
+  ]
+}

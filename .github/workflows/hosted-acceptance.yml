@@ -1,0 +1,115 @@
+name: Exact-head hosted acceptance
+on:
+  push:
+    branches: [verify/acceptance-20261031]
+permissions:
+  contents: read
+concurrency:
+  group: exact-acceptance-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  acceptance:
+    if: github.repository == 'ahmadmuj/pdfcraft' && github.ref == 'refs/heads/verify/acceptance-20261031'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - pr: '2789'
+            head: ae51de1aaecce07d445766d35d46c7a6d21613a2
+            tree: 81b63da768edfb8b2d79fc4fac22c363a0ee4d64
+          - pr: '3280'
+            head: 1d1facc02d139db89fe05539859bb852d062bdd3
+            tree: f9ab0b8271ee2acb5f0aca12e33a806708989692
+          - pr: '3274'
+            head: 5a2132ee340bb05e94c4231429dff9340adfe4d0
+            tree: 1452187407747288b81471431de43d1d23a57308
+          - pr: '3628'
+            head: 25ae52009ae824ac49ba0f11867eb026acc40fb1
+            tree: 1a6fe62de459544fe3620cd77c582834b95b9200
+    env:
+      EXPECTED_HEAD: ${{ matrix.head }}
+      EXPECTED_TREE: ${{ matrix.tree }}
+      EXPECTED_HARNESS: ${{ github.sha }}
+      PR_NUMBER: ${{ matrix.pr }}
+    steps:
+      - name: Check out the immutable verifier commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: harness
+          persist-credentials: false
+      - name: Check out one exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ahmadmuj/pdfcraft
+          ref: ${{ matrix.head }}
+          path: source
+          persist-credentials: false
+      - name: Check out the reviewed fonts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: storytold/craft-fonts
+          ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+          path: fonts
+          persist-credentials: false
+      - name: Install hosted dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev qpdf=11.9.0-1.1ubuntu0.1 libqpdf29t64=11.9.0-1.1ubuntu0.1 python3-pil python3-venv poppler-utils=24.02.0-1ubuntu9.11 libpoppler134=24.02.0-1ubuntu9.11
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          python3 -m venv --system-site-packages "$RUNNER_TEMP/oracle-venv"
+          "$RUNNER_TEMP/oracle-venv/bin/pip" install --only-binary=:all: --no-deps --require-hashes -r harness/oracle-requirements.txt
+          echo "$RUNNER_TEMP/oracle-venv/bin" >> "$GITHUB_PATH"
+          rustc --version
+          dpkg-query -W qpdf poppler-utils libpoppler134 python3-pil
+      - name: Run the exact-head acceptance case
+        shell: bash
+        env:
+          SOURCE_DIR: ${{ github.workspace }}/source
+          HARNESS_DIR: ${{ github.workspace }}/harness
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/fonts
+        run: |
+          set -euo pipefail
+          test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HARNESS"
+          bash harness/hosted-acceptance.sh
+      - name: Select one bounded PR2789 observation image
+        if: success() && matrix.pr == '2789'
+        id: observation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+          from PIL import Image
+          root = Path(os.environ['RUNNER_TEMP']).resolve()
+          files = list(root.glob('acceptance.*/supported.png'))
+          assert len(files) == 1, 'expected one observation image'
+          path = files[0]
+          assert not path.is_symlink()
+          assert path.resolve().is_relative_to(root)
+          assert 0 < path.stat().st_size <= 8 * 1024 * 1024
+          with Image.open(path) as image:
+              assert image.format == 'PNG'
+              assert 0 < image.width <= 4096 and 0 < image.height <= 4096
+              image.verify()
+          print('observation_sha256=' + hashlib.sha256(path.read_bytes()).hexdigest())
+          assert '\n' not in str(path) and '\r' not in str(path)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('path=' + str(path) + '\n')
+          PY
+      - name: Retain only the observation PNG for one day
+        if: success() && matrix.pr == '2789'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: observation-2789-${{ matrix.head }}
+          path: ${{ steps.observation.outputs.path }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          include-hidden-files: false
