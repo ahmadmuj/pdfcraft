@@ -1,7 +1,6 @@
 name: Exact-head hosted acceptance
 on:
-  push:
-    branches: [verify/acceptance-20261031]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
