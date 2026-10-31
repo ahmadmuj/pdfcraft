@@ -336,7 +336,7 @@ fn sequential_clips_preserve_text_and_later_bounds() {
 }
 
 #[test]
-fn redaction_bypasses_form_bounds_but_preserves_page_bounds() {
+fn redaction_retains_inside_page_text_outside_form_bounds() {
     let pdf = document("BT /F1 6 Tf 100 10 Td (CLIPPED) Tj ET", BOUNDS, IDENTITY, "/Fm Do", None);
     let visual = extract_page_filtered(&pdf, 0, &InterpreterSettings::default(), TextFilter::default()).unwrap();
     assert_eq!(visual.plain_text(), "");

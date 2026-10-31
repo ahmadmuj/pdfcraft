@@ -382,7 +382,9 @@ mod order;
 
 use device::WORD_GAP;
 #[cfg(test)]
-use device::{MAX_REDRAW_TEXT, REDRAW_TEXT_BYTES, Replaced, TextDevice, extract_page};
+use device::{MAX_REDRAW_TEXT, REDRAW_TEXT_BYTES, Replaced, TextDevice};
+#[cfg(test)]
+pub(crate) use device::extract_page;
 pub(crate) use device::{extract_page_filtered, extract_page_for_redaction};
 pub use layout::layout;
 #[cfg(test)]
