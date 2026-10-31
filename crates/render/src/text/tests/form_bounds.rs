@@ -211,9 +211,9 @@ fn mixed_actual_text_does_not_replace_later_redraws_or_weaken_filters() {
 }
 
 #[test]
-fn crop_box_and_clipping_only_mode_are_not_changed() {
-    // The base does not clip extraction to the page. That correction belongs to PR2838.
-    assert_eq!(super::page_text("BT /F2 6 Tf 500 500 Td (OUTSIDE-PAGE) Tj ET"), "OUTSIDE-PAGE");
+fn upstream_crop_box_and_clipping_only_mode_are_preserved() {
+    // Current upstream excludes text outside the page independently of form clipping.
+    assert_eq!(super::page_text("BT /F2 6 Tf 500 500 Td (OUTSIDE-PAGE) Tj ET"), "");
     // Upstream PR3116 emits mode7 for extraction, including when image text is filtered.
     assert_text(&document("BT /F1 6 Tf 7 Tr 10 10 Td (CLIP) Tj ET", BOUNDS, IDENTITY, "/Fm Do", None), "CLIP");
 }
@@ -333,4 +333,12 @@ fn sequential_clips_preserve_text_and_later_bounds() {
     body.push_str("BT /F1 6 Tf 10 10 Td (INSIDE) Tj ET BT /F1 6 Tf 100 100 Td (OUTSIDE) Tj ET");
     let pdf = document(&body, BOUNDS, IDENTITY, "/Fm Do BT /F1 6 Tf 100 100 Td (PAGE) Tj ET", None);
     assert_text(&pdf, "PAGE\nINSIDE");
+}
+
+#[test]
+fn redaction_bypasses_form_bounds_but_preserves_page_bounds() {
+    let pdf = document("BT /F1 6 Tf 100 10 Td (CLIPPED) Tj ET", BOUNDS, IDENTITY, "/Fm Do", None);
+    let visual = extract_page_filtered(&pdf, 0, &InterpreterSettings::default(), TextFilter::default()).unwrap();
+    assert_eq!(visual.plain_text(), "");
+    assert_eq!(extract_page_for_redaction(&pdf, 0, &InterpreterSettings::default()).unwrap().plain_text(), "CLIPPED");
 }
