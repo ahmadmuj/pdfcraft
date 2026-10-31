@@ -136,8 +136,39 @@ fn flatten_shared_appearance_keeps_separate_memberships_and_original_stream() {
     assert_eq!(paint_memberships(&doc), vec![(ap, Some(Object::Ref(ObjRef::new(4, 0)))), (ap, Some(Object::Ref(ObjRef::new(5, 0)))), (ap, None),]);
 }
 
-/// Associate each invocation with its active OC block. A resource-only fix must fail.
+#[test]
+fn flatten_keeps_no_rotate_placement_and_membership_on_the_same_saved_invocation() {
+    let mut doc = fixture("/OC 4 0 R", 4 | 16, "/OC 5 0 R");
+    let appearance = ObjRef::new(7, 0);
+    let original_appearance = (*doc.get(appearance)).clone();
+    let mut neighbor = doc.get(ObjRef::new(8, 0)).as_dict().unwrap().clone();
+    neighbor.set(b"F".to_vec(), Object::Int(4));
+    neighbor.set(b"OC".to_vec(), Object::Ref(ObjRef::new(5, 0)));
+    let neighbor = doc.add(Object::Dict(neighbor));
+    doc.update_dict(ObjRef::new(3, 0), |page| {
+        page.set(b"Rotate".to_vec(), Object::Int(90));
+        page.set(b"Annots".to_vec(), Object::Array(vec![Object::Ref(ObjRef::new(8, 0)), Object::Ref(neighbor)]));
+    })
+    .unwrap();
+    assert_eq!(pdfcraft_edit::flatten(&mut doc, &[0], true, false).unwrap(), 2);
+    let doc = Document::open(Arc::new(saved(&doc))).unwrap();
+    assert_eq!(
+        paint_invocations(&doc),
+        vec![
+            (appearance, Some(Object::Ref(ObjRef::new(4, 0))), [0.0, 1.0, -1.0, 0.0, 100.0, 100.0]),
+            (appearance, Some(Object::Ref(ObjRef::new(5, 0))), [1.0, 0.0, 0.0, 1.0, 50.0, 50.0]),
+        ]
+    );
+    assert_eq!(*doc.get(appearance), original_appearance, "preserve the shared appearance dictionary and stream bytes");
+    assert!(!pdfcraft_model::pages(&doc).remove(0).dict.contains(b"Annots"));
+}
+
 fn paint_memberships(doc: &Document) -> Vec<(ObjRef, Option<Object>)> {
+    paint_invocations(doc).into_iter().map(|(reference, membership, _)| (reference, membership)).collect()
+}
+
+/// Associate each invocation with its active OC block and placement. A resource-only fix must fail.
+fn paint_invocations(doc: &Document) -> Vec<(ObjRef, Option<Object>, [f64; 6])> {
     let page = pdfcraft_model::pages(doc).remove(0);
     let resources = doc.resolve(page.dict.get(b"Resources").unwrap());
     let resources = resources.as_dict().unwrap();
@@ -150,13 +181,21 @@ fn paint_memberships(doc: &Document) -> Vec<(ObjRef, Option<Object>)> {
     };
     let mut contexts = Vec::new();
     let mut paints = Vec::new();
+    let mut matrix = pdfcraft_content::Matrix::IDENTITY;
+    let mut matrices = Vec::new();
     for stream in streams {
         let resolved = doc.resolve(&stream);
         let Object::Stream(stream) = &*resolved else { panic!("content stream") };
         let parsed = pdfcraft_content::parse(&stream.decoded().unwrap());
         assert_eq!(parsed.skipped, 0);
         for op in parsed.ops {
-            if op.is("BDC") {
+            if op.is("q") {
+                matrices.push(matrix);
+            } else if op.is("Q") {
+                matrix = matrices.pop().expect("balanced graphics state");
+            } else if op.is("cm") {
+                matrix = pdfcraft_content::Matrix(op.nums::<6>().unwrap()).then(&matrix);
+            } else if op.is("BDC") {
                 let membership = if op.name(0) == Some(b"OC") {
                     Some(properties.as_ref().unwrap().as_dict().unwrap().get(op.name(1).unwrap()).unwrap().clone())
                 } else {
@@ -169,11 +208,12 @@ fn paint_memberships(doc: &Document) -> Vec<(ObjRef, Option<Object>)> {
                 assert!(contexts.pop().is_some(), "balanced marked content");
             } else if op.is("Do") {
                 let reference = xobjects.as_ref().unwrap().as_dict().unwrap().reference(op.name(0).unwrap()).unwrap();
-                paints.push((reference, contexts.iter().rev().find_map(Clone::clone)));
+                paints.push((reference, contexts.iter().rev().find_map(Clone::clone), matrix.0));
             }
         }
     }
     assert!(contexts.is_empty(), "every optional-content block must close");
+    assert!(matrices.is_empty(), "every graphics state must restore");
     paints
 }
 
